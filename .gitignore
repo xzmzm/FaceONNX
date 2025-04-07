@@ -1,2 +1,3 @@
 # ONNX models
-*.onnx
+*.onnx\
+.vs
