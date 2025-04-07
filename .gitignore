@@ -1,3 +1,5 @@
 # ONNX models
 *.onnx\
 .vs
+gallery_images/
+backend/embeddings.json
