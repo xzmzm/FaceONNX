@@ -99,8 +99,8 @@ async def register_face(label: str = Form(...), file: UploadFile = File(...)):
             image_np_bgr=image_np_bgr,
             detection_session=detection_session,
             embedding_session=embedding_session,
-            landmark_session=None, # Not needed for registration
-            extract_68_landmarks=False
+            landmark_session=landmark_session, # ALWAYS pass session for alignment
+            extract_68_landmarks=True # ALWAYS extract landmarks for alignment during registration
         )
 
         # Check if any face was processed and has an embedding

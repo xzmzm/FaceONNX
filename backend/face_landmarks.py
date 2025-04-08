@@ -6,20 +6,47 @@ from typing import List, Tuple, Optional
 # Define input size based on C# code analysis
 LANDMARK_68_INPUT_SIZE = (112, 112)
 
-def preprocess_image_landmarks_68(cropped_face_np: np.ndarray, input_size: Tuple[int, int] = LANDMARK_68_INPUT_SIZE) -> Optional[np.ndarray]:
+def preprocess_image_landmarks_68(
+    image_np_bgr: np.ndarray,
+    box: Tuple[int, int, int, int],
+    input_size: Tuple[int, int] = LANDMARK_68_INPUT_SIZE
+) -> Optional[Tuple[np.ndarray, np.ndarray]]: # Return blob and the cropped face
     """
-    Prepares the *cropped* face image for the PFLD 68-point landmark model.
-    - Resizes to input_size (e.g., 112x112).
+    Crops a face using the bounding box and prepares it for the PFLD 68-point landmark model.
+    - Crops the face from the original image using the provided box.
+    - Resizes the crop to input_size (e.g., 112x112).
     - Normalizes pixel values to [0, 1].
     - Transposes to NCHW format.
+    - Returns both the preprocessed blob and the cropped face numpy array.
     """
-    if cropped_face_np is None or cropped_face_np.size == 0:
-        print("Error: Input cropped face is empty for landmark preprocessing.")
+    if image_np_bgr is None:
+        print("Error: Input image is None for landmark preprocessing.")
+        return None
+    if box is None or len(box) != 4:
+        print("Error: Invalid bounding box for landmark preprocessing.")
+        return None
+
+    x1, y1, x2, y2 = box
+    h_img, w_img = image_np_bgr.shape[:2]
+
+    # Ensure coordinates are within image bounds before cropping
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w_img - 1, x2), min(h_img - 1, y2)
+
+    if x1 >= x2 or y1 >= y2:
+        print(f"Warning: Invalid crop dimensions derived from bbox {box}. Skipping landmark preprocessing.")
+        return None
+
+    # Crop the face
+    cropped_face_np = image_np_bgr[y1:y2, x1:x2]
+
+    if cropped_face_np.size == 0:
+        print("Warning: Cropped face image is empty during landmark preprocessing.")
         return None
 
     try:
         # Resize to the required input size (112x112 for PFLD in C# example)
-        resized_face = cv2.resize(cropped_face_np, input_size, interpolation=cv2.INTER_LINEAR)
+        resized_face = cv2.resize(cropped_face_np, input_size, interpolation=cv2.INTER_CUBIC) # Try INTER_CUBIC
 
         # Convert to float32 and normalize to [0, 1]
         input_blob = resized_face.astype(np.float32) / 255.0
@@ -29,7 +56,8 @@ def preprocess_image_landmarks_68(cropped_face_np: np.ndarray, input_size: Tuple
         input_blob = np.expand_dims(input_blob, axis=0) # Add batch dimension
         input_blob = np.ascontiguousarray(input_blob) # Ensure contiguous memory layout
 
-        return input_blob
+        # Return both the blob and the cropped face itself
+        return input_blob, cropped_face_np
     except Exception as e:
         print(f"Error during 68-point landmark preprocessing: {e}")
         return None

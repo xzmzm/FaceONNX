@@ -52,9 +52,18 @@ def get_embedding(embedding_session: ort.InferenceSession, embedding_blob: np.nd
 
         embedding_vector = embedding_session.run([output_name], {input_name: embedding_blob})[0]
 
-        # Return the raw embedding vector (as list for JSON compatibility)
-        # Remove L2 normalization to match C# FaceEmbedder output
-        return embedding_vector.flatten().astype(np.float32).tolist()
+        # Apply L2 normalization
+        embedding_flat = embedding_vector.flatten().astype(np.float32)
+        norm = np.linalg.norm(embedding_flat)
+        if norm == 0:
+             # Handle zero vector case to avoid division by zero
+             print("Warning: Embedding vector norm is zero.")
+             normalized_embedding = embedding_flat # Or return None/error? Keep as is for now.
+        else:
+             normalized_embedding = embedding_flat / norm
+
+        # Return the L2 normalized embedding vector as a list
+        return normalized_embedding.tolist()
     except Exception as e:
         print(f"Error during embedding inference: {e}")
         return None
