@@ -2,7 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { toast } from 'sonner';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'; // Added recharts components
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { Button } from '@/components/ui/button'; // Import Button
+import { Trash2 } from 'lucide-react'; // Import an icon for delete
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog" // Import Alert Dialog
 
 // Define the expected structure for a single registered entry
 interface GalleryEntry {
@@ -47,8 +60,13 @@ const GalleryPage: React.FC = () => {
           throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
         }
 
-        const data: GalleryData = await response.json();
-        setGalleryData(data);
+        // The backend returns { "data": { ...gallery... } }
+        const responseData = await response.json();
+        if (!responseData || typeof responseData.data !== 'object') {
+            throw new Error("Invalid data structure received from gallery endpoint.");
+        }
+        const actualGalleryData: GalleryData = responseData.data;
+        setGalleryData(actualGalleryData);
       } catch (err) {
         console.error('Failed to fetch gallery data:', err);
         const errorMessage = err instanceof Error ? err.message : String(err);
@@ -60,7 +78,65 @@ const GalleryPage: React.FC = () => {
     };
 
     fetchData();
-  }, []); // Empty dependency array means this runs once on mount
+  }, []);
+
+  // --- Delete Handler ---
+  const handleDeleteEntry = async (labelToDelete: string, filenameToDelete: string) => {
+    // Find the entry to confirm deletion details (optional but good UX)
+    const entryToDelete = galleryData?.[labelToDelete]?.find(entry => entry.image_filename === filenameToDelete);
+    if (!entryToDelete) {
+      toast.error("Could not find entry to delete.");
+      return;
+    }
+
+    // Confirmation is handled by AlertDialog, this function is called on confirm
+
+    toast.info(`Deleting entry for ${labelToDelete}...`);
+    try {
+      const backendBaseUrl = import.meta.env.VITE_BACKEND_URL;
+      const deleteUrl = new URL(`${backendBaseUrl}/delete_entry`);
+      deleteUrl.searchParams.append('label', labelToDelete);
+      deleteUrl.searchParams.append('filename', filenameToDelete);
+
+      const response = await fetch(deleteUrl.toString(), {
+        method: 'DELETE',
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || `HTTP error! status: ${response.status}`);
+      }
+
+      toast.success(`Successfully deleted entry for ${labelToDelete} (${filenameToDelete})`);
+
+      // Update local state for immediate feedback
+      setGalleryData(currentData => {
+        if (!currentData) return null;
+
+        const newData = { ...currentData };
+        const entriesForLabel = newData[labelToDelete];
+
+        if (entriesForLabel) {
+          const updatedEntries = entriesForLabel.filter(entry => entry.image_filename !== filenameToDelete);
+
+          if (updatedEntries.length === 0) {
+            // If no entries left for this label, remove the label itself
+            delete newData[labelToDelete];
+          } else {
+            // Otherwise, update the entries for the label
+            newData[labelToDelete] = updatedEntries;
+          }
+        }
+        return newData;
+      });
+
+    } catch (error) {
+      console.error('Deletion failed:', error);
+      toast.error(`Deletion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  // --- End Delete Handler ---
 
   return (
     <Card className="w-full max-w-4xl"> {/* Even wider card */}
@@ -98,8 +174,41 @@ const GalleryPage: React.FC = () => {
                               <div className="w-full h-48 bg-muted flex items-center justify-center text-muted-foreground">No Image</div>
                             )}
                           </CardHeader>
-                          <CardContent className="p-4 space-y-2">
-                             <CardTitle className="text-sm mb-2">Entry #{index + 1}</CardTitle>
+                          <CardContent className="p-4 space-y-2 relative"> {/* Added relative positioning */}
+                             {/* Delete Button Top Right */}
+                             <AlertDialog>
+                               <AlertDialogTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="absolute top-1 right-1 h-6 w-6 text-destructive hover:bg-destructive/10" // Positioned top-right
+                                    aria-label="Delete entry"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                               </AlertDialogTrigger>
+                               <AlertDialogContent>
+                                 <AlertDialogHeader>
+                                   <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                                   <AlertDialogDescription>
+                                     This action cannot be undone. This will permanently delete the face entry
+                                     for <span className="font-semibold">{label}</span> (Image: <span className="font-mono text-xs">{entry.image_filename}</span>)
+                                     and remove its data from the system.
+                                   </AlertDialogDescription>
+                                 </AlertDialogHeader>
+                                 <AlertDialogFooter>
+                                   <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                   <AlertDialogAction
+                                      onClick={() => handleDeleteEntry(label, entry.image_filename)}
+                                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90" // Destructive style
+                                   >
+                                      Delete
+                                   </AlertDialogAction>
+                                 </AlertDialogFooter>
+                               </AlertDialogContent>
+                             </AlertDialog>
+
+                             <CardTitle className="text-sm mb-2 pt-2">Entry #{index + 1}</CardTitle> {/* Added padding top */}
                              {/* Accordion for Embedding Chart */}
                              <Accordion type="single" collapsible className="w-full">
                                <AccordionItem value="embedding-chart">

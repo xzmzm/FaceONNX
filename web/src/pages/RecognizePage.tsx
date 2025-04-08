@@ -17,7 +17,8 @@ interface RecognitionResult {
   query_embedding: number[] | null;
   matched_embedding: number[] | null;
   matched_image_filename: string | null;
-  query_landmarks: [number, number][] | null; // Expecting list of [x, y] tuples
+  query_landmarks_5pt: [number, number][] | null; // Renamed: 5-point landmarks from detector
+  query_landmarks_68pt?: [number, number][] | null; // Optional: 68-point landmarks from PFLD
 }
 
 // Helper function to calculate difference and prepare data for comparison chart
@@ -52,7 +53,8 @@ const RecognizePage: React.FC = () => {
   const [recognitionResult, setRecognitionResult] = useState<RecognitionResult | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
-  const [showLandmarks, setShowLandmarks] = useState(false); // State for landmark toggle
+  // Combined state: controls both requesting 68 landmarks AND showing the overlay
+  const [showKeypoints, setShowKeypoints] = useState(false);
   const queryImageRef = useRef<HTMLImageElement>(null); // Ref to get query image dimensions
 
   const handleRecognize = async () => {
@@ -73,10 +75,14 @@ const RecognizePage: React.FC = () => {
       // Use a consistent filename, the backend doesn't rely on it
       formData.append('file', blob, 'face_image.jpg');
 
-      // Use environment variable for backend URL
-      const backendUrl = `${import.meta.env.VITE_BACKEND_URL}/recognize`;
+      // Use environment variable for backend URL and add query param if needed
+      const url = new URL(`${import.meta.env.VITE_BACKEND_URL}/recognize`);
+      if (showKeypoints) { // Use the combined state here
+        url.searchParams.append('extract_landmarks', 'true');
+      }
+      console.log("Requesting URL:", url.toString()); // Log the request URL
 
-      const response = await fetch(backendUrl, {
+      const response = await fetch(url.toString(), {
         method: 'POST',
         body: formData,
       });
@@ -175,25 +181,62 @@ const RecognizePage: React.FC = () => {
                       className="block max-h-60 rounded border" // Ensure image is block for layout
                       onLoad={() => { /* Could trigger redraw if needed */ }}
                    />
-                   {/* Landmark Overlay */}
-                   {showLandmarks && recognitionResult?.query_landmarks && queryImageRef.current && (
-                      <svg
-                         className="absolute top-0 left-0 w-full h-full pointer-events-none"
-                         viewBox={`0 0 ${queryImageRef.current.naturalWidth} ${queryImageRef.current.naturalHeight}`} // Use natural dimensions for coordinate system
-                         preserveAspectRatio="none" // Don't preserve aspect ratio for the SVG itself
-                      >
-                         {recognitionResult.query_landmarks.map(([x, y], index) => (
-                            <circle
-                               key={`landmark-${index}`}
-                               cx={x}
-                               cy={y}
-                               r="2" // Adjust radius as needed
-                               fill="red"
-                               stroke="white"
-                               strokeWidth="0.5"
-                            />
-                         ))}
-                      </svg>
+                   {/* Landmark Overlay - Visibility controlled by showKeypoints */}
+                   {showKeypoints && queryImageRef.current && (recognitionResult?.query_landmarks_5pt || recognitionResult?.query_landmarks_68pt) && (
+                     <svg
+                       className="absolute top-0 left-0 w-full h-full pointer-events-none"
+                       viewBox={`0 0 ${queryImageRef.current.naturalWidth} ${queryImageRef.current.naturalHeight}`}
+                       preserveAspectRatio="none"
+                     >
+                       {/* Draw 68-point landmark connections (mesh) */}
+                       {recognitionResult?.query_landmarks_68pt && recognitionResult.query_landmarks_68pt.length === 68 && (
+                         <g stroke="lime" strokeWidth="0.75" fill="none"> {/* Group for lines */}
+                           {/* Jaw line */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(0, 17).map(p => p.join(',')).join(' ')} />
+                           {/* Left eyebrow */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(17, 22).map(p => p.join(',')).join(' ')} />
+                           {/* Right eyebrow */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(22, 27).map(p => p.join(',')).join(' ')} />
+                           {/* Nose bridge */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(27, 31).map(p => p.join(',')).join(' ')} />
+                           {/* Lower nose */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(31, 36).map(p => p.join(',')).join(' ')} />
+                           {/* Left eye (closed loop) */}
+                           <polyline points={[...recognitionResult.query_landmarks_68pt.slice(36, 42), recognitionResult.query_landmarks_68pt[36]].map(p => p.join(',')).join(' ')} />
+                           {/* Right eye (closed loop) */}
+                           <polyline points={[...recognitionResult.query_landmarks_68pt.slice(42, 48), recognitionResult.query_landmarks_68pt[42]].map(p => p.join(',')).join(' ')} />
+                           {/* Outer lip (closed loop) */}
+                           <polyline points={[...recognitionResult.query_landmarks_68pt.slice(48, 60), recognitionResult.query_landmarks_68pt[48]].map(p => p.join(',')).join(' ')} />
+                           {/* Inner lip (closed loop) */}
+                           <polyline points={[...recognitionResult.query_landmarks_68pt.slice(60, 68), recognitionResult.query_landmarks_68pt[60]].map(p => p.join(',')).join(' ')} />
+                         </g>
+                       )}
+
+                       {/* Draw 5-point landmark points (blue) */}
+                       {recognitionResult?.query_landmarks_5pt?.map(([x, y], index) => (
+                         <circle
+                           key={`landmark-5pt-${index}`}
+                           cx={x}
+                           cy={y}
+                           r="2.5"
+                           fill="blue"
+                           stroke="white"
+                           strokeWidth="0.5"
+                         />
+                       ))}
+                       {/* Draw 68-point landmark points (red) */}
+                       {recognitionResult?.query_landmarks_68pt?.map(([x, y], index) => (
+                         <circle
+                           key={`landmark-68pt-${index}`}
+                           cx={x}
+                           cy={y}
+                           r="1.5"
+                           fill="red"
+                           stroke="white"
+                           strokeWidth="0.5"
+                         />
+                       ))}
+                     </svg>
                    )}
                 </div>
              )}
@@ -237,25 +280,62 @@ const RecognizePage: React.FC = () => {
                       className="block max-h-60 rounded border"
                       onLoad={() => { /* Could trigger redraw if needed */ }}
                    />
-                   {/* Landmark Overlay */}
-                   {showLandmarks && recognitionResult?.query_landmarks && queryImageRef.current && (
-                      <svg
-                         className="absolute top-0 left-0 w-full h-full pointer-events-none"
-                         viewBox={`0 0 ${queryImageRef.current.naturalWidth} ${queryImageRef.current.naturalHeight}`}
-                         preserveAspectRatio="none"
-                      >
-                         {recognitionResult.query_landmarks.map(([x, y], index) => (
-                            <circle
-                               key={`landmark-snap-${index}`}
-                               cx={x}
-                               cy={y}
-                               r="2"
-                               fill="red"
-                               stroke="white"
-                               strokeWidth="0.5"
-                            />
-                         ))}
-                      </svg>
+                   {/* Landmark Overlay - Visibility controlled by showKeypoints */}
+                   {showKeypoints && queryImageRef.current && (recognitionResult?.query_landmarks_5pt || recognitionResult?.query_landmarks_68pt) && (
+                     <svg
+                       className="absolute top-0 left-0 w-full h-full pointer-events-none"
+                       viewBox={`0 0 ${queryImageRef.current.naturalWidth} ${queryImageRef.current.naturalHeight}`}
+                       preserveAspectRatio="none"
+                     >
+                       {/* Draw 68-point landmark connections (mesh) */}
+                       {recognitionResult?.query_landmarks_68pt && recognitionResult.query_landmarks_68pt.length === 68 && (
+                         <g stroke="lime" strokeWidth="0.75" fill="none"> {/* Group for lines */}
+                           {/* Jaw line */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(0, 17).map(p => p.join(',')).join(' ')} />
+                           {/* Left eyebrow */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(17, 22).map(p => p.join(',')).join(' ')} />
+                           {/* Right eyebrow */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(22, 27).map(p => p.join(',')).join(' ')} />
+                           {/* Nose bridge */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(27, 31).map(p => p.join(',')).join(' ')} />
+                           {/* Lower nose */}
+                           <polyline points={recognitionResult.query_landmarks_68pt.slice(31, 36).map(p => p.join(',')).join(' ')} />
+                           {/* Left eye (closed loop) */}
+                           <polyline points={[...recognitionResult.query_landmarks_68pt.slice(36, 42), recognitionResult.query_landmarks_68pt[36]].map(p => p.join(',')).join(' ')} />
+                           {/* Right eye (closed loop) */}
+                           <polyline points={[...recognitionResult.query_landmarks_68pt.slice(42, 48), recognitionResult.query_landmarks_68pt[42]].map(p => p.join(',')).join(' ')} />
+                           {/* Outer lip (closed loop) */}
+                           <polyline points={[...recognitionResult.query_landmarks_68pt.slice(48, 60), recognitionResult.query_landmarks_68pt[48]].map(p => p.join(',')).join(' ')} />
+                           {/* Inner lip (closed loop) */}
+                           <polyline points={[...recognitionResult.query_landmarks_68pt.slice(60, 68), recognitionResult.query_landmarks_68pt[60]].map(p => p.join(',')).join(' ')} />
+                         </g>
+                       )}
+
+                       {/* Draw 5-point landmark points (blue) */}
+                       {recognitionResult?.query_landmarks_5pt?.map(([x, y], index) => (
+                         <circle
+                           key={`landmark-snap-5pt-${index}`}
+                           cx={x}
+                           cy={y}
+                           r="2.5"
+                           fill="blue"
+                           stroke="white"
+                           strokeWidth="0.5"
+                         />
+                       ))}
+                       {/* Draw 68-point landmark points (red) */}
+                       {recognitionResult?.query_landmarks_68pt?.map(([x, y], index) => (
+                         <circle
+                           key={`landmark-snap-68pt-${index}`}
+                           cx={x}
+                           cy={y}
+                           r="1.5"
+                           fill="red"
+                           stroke="white"
+                           strokeWidth="0.5"
+                         />
+                       ))}
+                     </svg>
                    )}
                 </div>
              )}
@@ -263,27 +343,28 @@ const RecognizePage: React.FC = () => {
           </TabsContent>
         </Tabs>
 
-        <Button onClick={handleRecognize} disabled={!imageSrc || isRecognizing} className="w-full">
-          {isRecognizing ? 'Recognizing...' : 'Recognize Face'}
-        </Button>
+        {/* Combined Recognize Button and Show Keypoints Toggle */}
+        <div className="flex items-center justify-center space-x-4 pt-2">
+           <Button onClick={handleRecognize} disabled={!imageSrc || isRecognizing} className="flex-grow"> {/* Button takes available space */}
+             {isRecognizing ? 'Recognizing...' : 'Recognize Face'}
+           </Button>
+           {/* Show Keypoints Toggle */}
+           <div className="flex items-center space-x-2 flex-shrink-0"> {/* Prevent toggle from shrinking */}
+              <Switch
+                 id="show-keypoints-toggle"
+                 checked={showKeypoints}
+                 onCheckedChange={setShowKeypoints}
+                 disabled={isRecognizing}
+              />
+              <Label htmlFor="show-keypoints-toggle" className="text-sm whitespace-nowrap">Show Keypoints</Label> {/* Prevent wrapping */}
+           </div>
+        </div>
 
         {/* --- Recognition Result Display --- */}
         {recognitionResult && (
           <Card className="mt-4 w-full bg-secondary/50"> {/* Removed max-w-4xl */}
-            <CardHeader className="flex flex-row items-center justify-between"> {/* Flex layout for title and toggle */}
+            <CardHeader> {/* Removed flex layout and toggle from header */}
               <CardTitle>Recognition Result</CardTitle>
-              {/* Landmark Toggle Switch */}
-              {recognitionResult?.query_landmarks && ( // Only show if landmarks are available
-                 <div className="flex items-center space-x-2">
-                    <Switch
-                       id="landmarks-toggle"
-                       checked={showLandmarks}
-                       onCheckedChange={setShowLandmarks}
-                       disabled={!recognitionResult?.query_landmarks} // Disable if no landmarks
-                    />
-                    <Label htmlFor="landmarks-toggle" className="text-sm">Show Landmarks</Label>
-                 </div>
-              )}
             </CardHeader>
             <CardContent className="space-y-4">
               <p>Label: <span className="font-semibold">{recognitionResult.label}</span></p>

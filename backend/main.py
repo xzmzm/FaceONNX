@@ -1,402 +1,79 @@
-import io
 import os
 import numpy as np
-import cv2
 import onnxruntime as ort
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse # Added for serving images
-from pydantic import BaseModel
-from PIL import Image
+from fastapi.responses import FileResponse
 from sklearn.metrics.pairwise import cosine_similarity
-import math
-import json
-import uuid # For generating unique filenames
-import shutil # For saving UploadFile
+import traceback # For detailed error logging
 
-# --- Configuration ---
-MODEL_DIR = "../netstandard/FaceONNX.Models/models/onnx"
-DETECTION_MODEL_PATH = os.path.join(MODEL_DIR, "yolov5s-face.onnx")
-EMBEDDING_MODEL_PATH = os.path.join(MODEL_DIR, "recognition_resnet27.onnx")
-# LANDMARK_MODEL_PATH no longer needed as we match C# FaceEmbedder pipeline
-EMBEDDINGS_FILE = "embeddings.json"
-GALLERY_DIR = "gallery_images" # Directory to store registered images
+import sys # Add sys import
+import os # Add os import
+
+# Ensure the parent directory (FaceONNX) is in the Python path
+# This allows running 'python main.py' from the 'backend' directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+# Import modules using absolute imports from the 'backend' package
+from backend import config
+from backend import models
+from backend import utils
+from backend import persistence
+from backend import face_detection
+from backend import face_embedding
+from backend import face_landmarks
+from backend import processing # Make sure processing is imported
+
+# --- Initialization ---
+
+# Check if model files exist before proceeding
+try:
+    config.check_model_files()
+except FileNotFoundError as e:
+    print(f"Error: {e}")
+    # Exit or raise a more specific startup error if running in a managed environment
+    exit(1) # Exit if models are missing
 
 # Create gallery directory if it doesn't exist
-os.makedirs(GALLERY_DIR, exist_ok=True)
-# Check if models exist
-if not all(os.path.exists(p) for p in [DETECTION_MODEL_PATH, EMBEDDING_MODEL_PATH]):
-    raise FileNotFoundError("Detection or Embedding ONNX model not found in FaceONNX.Models/models/onnx/. Please ensure the models submodule is initialized.")
+os.makedirs(config.GALLERY_DIR, exist_ok=True)
 
-# --- ONNX Model Loading ---
-# Use CPUExecutionProvider explicitly
-providers = ['CPUExecutionProvider']
-detection_session = ort.InferenceSession(DETECTION_MODEL_PATH, providers=providers)
-# landmark_session removed - not used in C# FaceEmbedder equivalent pipeline
-embedding_session = ort.InferenceSession(EMBEDDING_MODEL_PATH, providers=providers)
-# --- In-memory storage for embeddings and image filenames ---
-# Structure: { "label": [ {"embedding": [float_list], "image_filename": "unique_image.jpg"}, ... ] }
-registered_embeddings = {} # Initialize correctly
+# Load ONNX models
+try:
+    print(f"Loading detection model from: {config.DETECTION_MODEL_PATH}")
+    detection_session = ort.InferenceSession(config.DETECTION_MODEL_PATH, providers=config.PROVIDERS)
+    print(f"Loading embedding model from: {config.EMBEDDING_MODEL_PATH}")
+    embedding_session = ort.InferenceSession(config.EMBEDDING_MODEL_PATH, providers=config.PROVIDERS)
+    print(f"Loading 68-landmark model from: {config.LANDMARK_68_MODEL_PATH}")
+    landmark_session = ort.InferenceSession(config.LANDMARK_68_MODEL_PATH, providers=config.PROVIDERS)
+    print("ONNX models loaded successfully.")
+except Exception as e:
+    print(f"Fatal Error: Could not load ONNX models. {e}")
+    traceback.print_exc()
+    exit(1)
 
-# --- FastAPI App ---
+# Load registered embeddings
+registered_embeddings = persistence.load_embeddings(config.EMBEDDINGS_FILE)
+
+# --- FastAPI App Setup ---
 app = FastAPI(title="Face Recognition API")
 
-# --- CORS Middleware ---
-# Allows requests from the frontend development server
+# CORS Middleware
 origins = [
     "http://localhost:5173", # Default Vite dev server
     "http://127.0.0.1:5173", # Also allow loopback IP
-    # Add your production frontend URL here if needed
-    # "https://your-frontend-domain.com",
+    # Add production frontend URL if needed
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # List of allowed origins
-    allow_credentials=True, # Allow cookies
-    allow_methods=["*"],    # Allow all methods (GET, POST, etc.)
-    allow_headers=["*"],    # Allow all headers
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-# --- End CORS Middleware ---
-
-# --- Pydantic Models ---
-class RegistrationRequest(BaseModel):
-    label: str
-
-class FaceDetectionResult(BaseModel):
-    """Mirrors C# FaceDetectionResult structure"""
-    x1: int
-    y1: int
-    x2: int
-    y2: int
-    score: float # Combined objectness and class probability
-    landmarks: list[tuple[int, int]] # List of 5 (x, y) tuples for eyes, nose, mouth corners
-
-class RecognitionResponse(BaseModel):
-    label: str
-    similarity: float
-    query_embedding: list[float] | None = None
-    matched_embedding: list[float] | None = None
-    matched_image_filename: str | None = None
-    query_landmarks: list[tuple[int, int]] | None = None # Landmarks detected on the query image
-
-# --- Persistence Functions ---
-
-def load_embeddings():
-    """Loads registered embeddings from the JSON file."""
-    global registered_embeddings
-    if os.path.exists(EMBEDDINGS_FILE):
-        try:
-            with open(EMBEDDINGS_FILE, 'r') as f:
-                # Load from JSON, converting lists back to numpy arrays if needed internally
-                # For now, keep as lists in registered_embeddings for simplicity with JSON
-                loaded_data = json.load(f)
-                # Basic validation
-                if isinstance(loaded_data, dict):
-                     # Basic validation of inner structure (check for image_filename)
-                     valid_structure = True
-                     total_embeddings = 0
-                     for label, entries in loaded_data.items():
-                         if isinstance(entries, list):
-                             total_embeddings += len(entries)
-                             for entry in entries: # Check for new structure field
-                                 if not (isinstance(entry, dict) and "embedding" in entry and "image_filename" in entry): # Check for image_filename key
-                                     valid_structure = False
-                                     break
-                         else:
-                             valid_structure = False
-                         if not valid_structure:
-                             break
-
-                     if valid_structure:
-                         registered_embeddings = loaded_data
-                         print(f"Loaded {total_embeddings} embeddings/images for {len(registered_embeddings)} labels from {EMBEDDINGS_FILE}")
-                     else:
-                         print(f"Warning: Invalid data structure in {EMBEDDINGS_FILE}. Starting with empty embeddings.")
-                         registered_embeddings = {}
-                else:
-                    print(f"Warning: Invalid format in {EMBEDDINGS_FILE}. Starting with empty embeddings.")
-                    registered_embeddings = {}
-
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"Error loading embeddings from {EMBEDDINGS_FILE}: {e}. Starting with empty embeddings.")
-            registered_embeddings = {}
-    else:
-        print(f"Embeddings file ({EMBEDDINGS_FILE}) not found. Starting with empty embeddings.")
-        registered_embeddings = {}
-
-def save_embeddings():
-    """Saves the current registered embeddings to the JSON file."""
-    try:
-        # Ensure parent directory for embeddings file exists
-        if EMBEDDINGS_FILE and os.path.dirname(EMBEDDINGS_FILE):
-             os.makedirs(os.path.dirname(EMBEDDINGS_FILE), exist_ok=True)
-        with open(EMBEDDINGS_FILE, 'w') as f:
-            json.dump(registered_embeddings, f, indent=4)
-        print(f"Saved embeddings to {EMBEDDINGS_FILE}")
-    except IOError as e:
-        print(f"Error saving embeddings to {EMBEDDINGS_FILE}: {e}")
-
-# Load embeddings at startup
-load_embeddings()
-
-# --- Helper Functions ---
-
-# == Face Detection (YOLOv5s-face) ==
-
-def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
-    # Resize and pad image while meeting stride-multiple constraints
-    shape = im.shape[:2]  # current shape [height, width]
-    if isinstance(new_shape, int):
-        new_shape = (new_shape, new_shape)
-
-    # Scale ratio (new / old)
-    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-    if not scaleup:  # only scale down, do not scale up (for better val mAP)
-        r = min(r, 1.0)
-
-    # Compute padding
-    ratio = r, r  # width, height ratios
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
-    if auto:  # minimum rectangle
-        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
-    elif scaleFill:  # stretch
-        dw, dh = 0.0, 0.0
-        new_unpad = (new_shape[1], new_shape[0])
-        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
-
-    dw /= 2  # divide padding into 2 sides
-    dh /= 2
-
-    if shape[::-1] != new_unpad:  # resize
-        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
-    return im, ratio, (dw, dh)
-
-def preprocess_image_detection(image_np_bgr: np.ndarray, input_size=(640, 640)):
-    """Prepares image for YOLOv5s-face detection."""
-    img, ratio, (dw, dh) = letterbox(image_np_bgr, new_shape=input_size, auto=False, scaleup=False) # Use letterbox for padding/resizing
-    img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB (YOLO expects RGB)
-    img = np.ascontiguousarray(img)
-    img = img.astype(np.float32) / 255.0  # Normalize to 0.0 - 1.0
-    if img.ndim == 3:
-        img = np.expand_dims(img, axis=0) # Add batch dimension -> (1, 3, H, W)
-    return img, ratio, (dw, dh)
-
-def postprocess_detection(outputs, obj_thres=0.3, iou_thres=0.5, input_shape=(640,640), original_shape=(0,0), ratio=(0,0), pad=(0,0)):
-    """
-    Postprocesses YOLOv5s-face output.
-    Output format: [batch_size, num_boxes, 15]
-    Box format: [cx, cy, w, h, obj_conf, lmk1_x, lmk1_y, ..., lmk5_x, lmk5_y]
-    Note: This model doesn't have separate class confidence, obj_conf is the primary score.
-    """
-    # Basic NMS and filtering (replace with more robust NMS if needed)
-    outputs = outputs[0] # Get first batch result (shape: num_boxes, 15)
-    outputs = outputs[outputs[:, 4] >= obj_thres] # Filter by object confidence (index 4)
-
-    if not outputs.shape[0]:
-        return [] # No detections above threshold
-
-    # Convert box format from [cx, cy, w, h] to [x1, y1, x2, y2]
-    box = outputs[:, :4]
-    box[:, 0] = box[:, 0] - box[:, 2] / 2 # x_center - width/2 = x1
-    box[:, 1] = box[:, 1] - box[:, 3] / 2 # y_center - height/2 = y1
-    box[:, 2] = box[:, 0] + box[:, 2]     # x1 + width = x2
-    box[:, 3] = box[:, 1] + box[:, 3]     # y1 + height = y2
-    outputs[:, :4] = box
-
-    # Scale boxes and landmarks back to original image coordinates
-    img_h, img_w = original_shape
-    # Remove padding
-    outputs[:, [0, 2, 5, 7, 9, 11, 13]] -= pad[0]  # x padding (box x1, x2 and landmark x coords)
-    outputs[:, [1, 3, 6, 8, 10, 12, 14]] -= pad[1]  # y padding (box y1, y2 and landmark y coords)
-    # Rescale
-    outputs[:, [0, 2, 5, 7, 9, 11, 13]] /= ratio[0] # width ratio
-    outputs[:, [1, 3, 6, 8, 10, 12, 14]] /= ratio[1] # height ratio
-
-    # Clip boxes and landmarks to image boundaries
-    outputs[:, [0, 2, 5, 7, 9, 11, 13]] = outputs[:, [0, 2, 5, 7, 9, 11, 13]].clip(0, img_w)  # x coords
-    outputs[:, [1, 3, 6, 8, 10, 12, 14]] = outputs[:, [1, 3, 6, 8, 10, 12, 14]].clip(0, img_h)  # y coords
-
-    # Simple IOU based NMS (can be improved)
-    keep = []
-    scores = outputs[:, 4] # Object confidence score
-    order = scores.argsort()[::-1] # Sort by score desc
-
-    boxes = outputs[:, :4]
-
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        xx1 = np.maximum(boxes[i, 0], boxes[order[1:], 0])
-        yy1 = np.maximum(boxes[i, 1], boxes[order[1:], 1])
-        xx2 = np.minimum(boxes[i, 2], boxes[order[1:], 2])
-        yy2 = np.minimum(boxes[i, 3], boxes[order[1:], 3])
-
-        w = np.maximum(0.0, xx2 - xx1 + 1)
-        h = np.maximum(0.0, yy2 - yy1 + 1)
-        inter = w * h
-        ovr = inter / ((boxes[i, 2] - boxes[i, 0] + 1) * (boxes[i, 3] - boxes[i, 1] + 1) + (boxes[order[1:], 2] - boxes[order[1:], 0] + 1) * (boxes[order[1:], 3] - boxes[order[1:], 1] + 1) - inter)
-
-        inds = np.where(ovr <= iou_thres)[0]
-        order = order[inds + 1]
-
-    final_boxes = outputs[keep]
-    # Format results: [x1, y1, x2, y2, score, lmk1_x, lmk1_y, ..., lmk5_x, lmk5_y]
-    return final_boxes.tolist()
-
-
-def detect_faces(image_np_bgr: np.ndarray, obj_thres=0.3, iou_thres=0.5) -> list[dict]:
-    """
-    Detects all faces in an image using YOLOv5s-face.
-    Returns a list of dictionaries, each containing 'box', 'score', and 'landmarks'.
-    """
-    original_shape = image_np_bgr.shape[:2] # H, W
-    input_size = (640, 640) # YOLOv5s input size
-
-    # Preprocess
-    input_tensor, ratio, pad = preprocess_image_detection(image_np_bgr, input_size=input_size)
-
-    # Inference
-    input_name = detection_session.get_inputs()[0].name
-    output_name = detection_session.get_outputs()[0].name
-    outputs = detection_session.run([output_name], {input_name: input_tensor})[0]
-
-    # Postprocess to get list of FaceDetectionResult objects
-    detections = postprocess_detection(
-        outputs,
-        obj_thres=obj_thres, # Use objectness threshold
-        iou_thres=iou_thres,
-        input_shape=input_size,
-        original_shape=original_shape,
-        ratio=ratio,
-        pad=pad
-    )
-
-    # Convert raw list [x1, y1, x2, y2, score, lmk1x, lmk1y, ...] to list of dicts
-    results = []
-    for det in detections:
-        landmarks_list = []
-        for i in range(5):
-            lx = int(round(det[5 + i*2]))
-            ly = int(round(det[6 + i*2]))
-            landmarks_list.append((lx, ly))
-
-        results.append({
-            "box": [int(round(det[0])), int(round(det[1])), int(round(det[2])), int(round(det[3]))], # x1, y1, x2, y2
-            "score": float(det[4]),
-            "landmarks": landmarks_list
-        })
-
-    # Sort by score descending
-    results.sort(key=lambda x: x['score'], reverse=True)
-
-    return results # Returns list of detection dicts or empty list
-
-# == Landmark Extraction (PFLD) and Alignment Functions Removed ==
-# These are not used in the C# FaceEmbedder equivalent pipeline.
-# The pipeline now is: Detect -> Crop -> Resize(128x128) -> Normalize -> Embed
-
-# == Embedding Generation (ResNet27) ==
-
-def preprocess_image_embedding(cropped_face_np: np.ndarray, input_size=(128, 128)):
-    """Prepares the *cropped* face for the embedding model by resizing and normalizing."""
-    # Ensure input is the correct size (should be from align_face)
-    # Resize the cropped face to the required input size (128x128 for ResNet27)
-    resized_face = cv2.resize(cropped_face_np, input_size, interpolation=cv2.INTER_LINEAR)
-
-    # Normalize to [-1, 1] and transpose (HWC to NCHW)
-    # C# code uses: subtract 127.5, divide by 128. Input is BGR.
-    # blobFromImage expects BGR input by default.
-    # Use swapRB=False as the C# code doesn't swap channels before normalization.
-    input_blob = cv2.dnn.blobFromImage(
-        resized_face,
-        scalefactor=1.0/128.0,  # C# uses 1/128
-        size=input_size,
-        mean=(127.5, 127.5, 127.5), # C# subtracts 127.5
-        swapRB=False, # Keep BGR order to match C#
-        crop=False
-    )
-
-    return input_blob
-
-def get_embedding(embedding_blob: np.ndarray):
-    """Generates the 512-dimension embedding vector."""
-    if embedding_blob is None:
-        return None
-
-    input_name = embedding_session.get_inputs()[0].name
-    output_name = embedding_session.get_outputs()[0].name
-
-    embedding_vector = embedding_session.run([output_name], {input_name: embedding_blob})[0]
-
-    # Return the raw embedding vector (as list for JSON compatibility)
-    # Remove L2 normalization to match C# FaceEmbedder output
-    return embedding_vector.flatten().astype(np.float32).tolist()
-
-def process_image_to_embedding_and_landmarks(image_bytes: bytes) -> tuple[list | None, list[tuple[int, int]] | None]:
-    """Processes an uploaded image to get face embedding and landmarks."""
-    try:
-        # Read image using OpenCV
-        image_np_bgr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-        if image_np_bgr is None:
-            print("Error: Could not decode image.")
-            return None, None
-
-        # 1. Detect Faces
-        detections = detect_faces(image_np_bgr) # Returns list sorted by score
-        if not detections:
-            print("No face detected.")
-            return None, None
-
-        # Select the highest scoring face
-        best_detection = detections[0]
-        bbox = best_detection["box"] # [x1, y1, x2, y2]
-        landmarks_5pt = best_detection["landmarks"] # Ensure landmarks are extracted
-        print(f"Detected best face bbox: {bbox} with score {best_detection['score']:.4f}")
-
-        # 2. Crop Face
-        x1, y1, x2, y2 = bbox
-        # Ensure coordinates are within image bounds before cropping
-        h, w = image_np_bgr.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w - 1, x2), min(h - 1, y2)
-
-        if x1 >= x2 or y1 >= y2:
-             print(f"Warning: Invalid crop dimensions derived from bbox {bbox}. Skipping.")
-             return None, None
-
-        cropped_face_np = image_np_bgr[y1:y2, x1:x2]
-
-        if cropped_face_np.size == 0:
-            print("Warning: Cropped face image is empty.")
-            return None, None
-        print(f"Cropped face shape: {cropped_face_np.shape}")
-
-        # 3. Preprocess for Embedding (Resize 128x128, Normalize [-1, 1])
-        embedding_blob = preprocess_image_embedding(cropped_face_np) # Handles resize and normalization
-
-        # 4. Get Embedding (Raw, no L2 norm)
-        if embedding_blob is None:
-            print("Could not preprocess for embedding.")
-            return None, None # Return None for both if preprocessing fails
-        embedding = get_embedding(embedding_blob)
-        if embedding is None:
-            print("Could not generate embedding.")
-            return None, None # Return None for both if embedding fails
-        print(f"Generated embedding of length: {len(embedding)}, Landmarks: {landmarks_5pt}")
-
-        return embedding, landmarks_5pt
-
-    except Exception as e:
-        import traceback
-        print(f"Error processing image: {e}")
-        traceback.print_exc()
-        return None, None
-
 
 # --- API Endpoints ---
 
@@ -406,163 +83,287 @@ async def register_face(label: str = Form(...), file: UploadFile = File(...)):
     if not label:
         raise HTTPException(status_code=400, detail="Label cannot be empty.")
 
-    # Ensure filename is safe and generate a unique path
-    # Use original extension, default to .jpg if unknown
-    file_extension = os.path.splitext(file.filename)[1] if file.filename else '.jpg'
-    if not file_extension: file_extension = '.jpg' # Ensure there's an extension
-    # Sanitize label for use in filename (replace spaces, etc.) - basic example
-    safe_label = "".join(c if c.isalnum() else "_" for c in label)
-    unique_filename = f"{safe_label}_{uuid.uuid4().hex[:8]}{file_extension}"
-    image_save_path = os.path.join(GALLERY_DIR, unique_filename) # Full path for saving
-
-    # Save the uploaded file
+    image_save_path = None # Initialize to None
     try:
-        # Read the file content first for processing
-        image_bytes = await file.read()
-        # Save the file using shutil.copyfileobj
-        await file.seek(0) # Reset file pointer after reading
-        with open(image_save_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        print(f"Saved image to: {image_save_path}")
+        # Save uploaded image first
+        unique_filename, image_bytes = await utils.save_uploaded_image(file, label, config.GALLERY_DIR)
+        image_save_path = os.path.join(config.GALLERY_DIR, unique_filename) # Full path
+
+        # Decode image bytes
+        image_np_bgr = utils.decode_image(image_bytes)
+        if image_np_bgr is None:
+             raise HTTPException(status_code=400, detail="Could not decode uploaded image.")
+
+        # Process image for embedding (only need the first/best face for registration)
+        all_results = processing.process_image_full(
+            image_np_bgr=image_np_bgr,
+            detection_session=detection_session,
+            embedding_session=embedding_session,
+            landmark_session=None, # Not needed for registration
+            extract_68_landmarks=False
+        )
+
+        # Check if any face was processed and has an embedding
+        embedding = None
+        if all_results:
+            # Find the first result that has an embedding
+            for res in all_results:
+                if res.embedding:
+                    embedding = res.embedding
+                    print(f"Using embedding from face @ {res.detection.box} for registration.")
+                    break
+
+        if embedding is None:
+            # If embedding failed for all detected faces, clean up the saved image
+            utils.clean_up_image(image_save_path)
+            raise HTTPException(status_code=400, detail="Could not process image or detect face for embedding.")
+
+        # Add to registered embeddings
+        new_entry = {"embedding": embedding, "image_filename": unique_filename}
+        if label in registered_embeddings:
+            # Ensure it's a list (should be handled by load_embeddings validation)
+             if not isinstance(registered_embeddings.get(label), list):
+                 print(f"Warning: Correcting data structure for label '{label}' during registration.")
+                 registered_embeddings[label] = []
+             registered_embeddings[label].append(new_entry)
+        else:
+            registered_embeddings[label] = [new_entry]
+
+        print(f"Registered '{label}'. Total embeddings for label: {len(registered_embeddings[label])}")
+        persistence.save_embeddings(registered_embeddings, config.EMBEDDINGS_FILE) # Save after modification
+        return {"message": f"Face for '{label}' registered successfully.", "filename": unique_filename}
+
+    except HTTPException as http_exc:
+         # Re-raise HTTP exceptions directly
+         raise http_exc
     except Exception as e:
-        print(f"Error saving uploaded image: {e}")
-        raise HTTPException(status_code=500, detail="Could not save uploaded image.")
+        print(f"Error during registration: {e}")
+        traceback.print_exc()
+        # Clean up image if saving succeeded but processing failed later
+        if image_save_path:
+            utils.clean_up_image(image_save_path)
+        raise HTTPException(status_code=500, detail=f"An internal error occurred during registration: {e}")
     finally:
-        await file.close() # Ensure file is closed
+        # Ensure file is closed even if saving/processing fails
+        await file.close()
 
-    # Process image for embedding and landmarks (using the bytes already read)
-    embedding, _ = process_image_to_embedding_and_landmarks(image_bytes) # Call renamed function, ignore landmarks
 
-    if embedding is None:
-        # Attempt to clean up saved image if embedding failed
-        if os.path.exists(image_save_path):
-            try:
-                os.remove(image_save_path)
-                print(f"Removed image {image_save_path} due to embedding failure.")
-            except OSError as e:
-                print(f"Error removing image {image_save_path}: {e}")
-        raise HTTPException(status_code=400, detail="Could not process image or detect face for embedding.")
-
-    # Create the new entry with embedding and image filename
-    # Ensure embedding is not None before creating entry
-    if embedding is None:
-         # This case should have been caught earlier, but double-check
-         if os.path.exists(image_save_path):
-             try:
-                 os.remove(image_save_path)
-             except OSError: pass # Ignore error if removal fails
-         raise HTTPException(status_code=400, detail="Failed to generate embedding for registration.")
-
-    new_entry = {"embedding": embedding, "image_filename": unique_filename}
-
-    if label in registered_embeddings:
-        # Ensure existing entries are lists of dicts
-        if not isinstance(registered_embeddings[label], list):
-             print(f"Warning: Corrupted data structure for label '{label}', reinitializing.")
-             registered_embeddings[label] = []
-        # Further check if elements are dicts (optional, basic check done in load)
-        registered_embeddings[label].append(new_entry)
-    else:
-        registered_embeddings[label] = [new_entry] # Start with a list containing the new entry dict
-
-    print(f"Registered '{label}'. Total embeddings for label: {len(registered_embeddings[label])}")
-    save_embeddings() # Save after modification
-    return {"message": f"Face for '{label}' registered successfully."}
-
-@app.post("/recognize", response_model=RecognitionResponse)
-async def recognize_face(file: UploadFile = File(...)):
+@app.post("/recognize", response_model=models.RecognitionResponse)
+async def recognize_face(
+    file: UploadFile = File(...),
+    extract_landmarks: bool = Query(False, description="Set to true to extract 68-point landmarks") # Query param
+    ):
     """Recognizes a face from an uploaded image against registered faces."""
     if not registered_embeddings:
         raise HTTPException(status_code=400, detail="No faces registered yet.")
 
-    image_bytes = await file.read()
-    # Get both embedding and landmarks for the query image
-    query_embedding, query_landmarks = process_image_to_embedding_and_landmarks(image_bytes)
+    image_np_bgr = None # Initialize
+    all_face_results = [] # Initialize
 
-    if query_embedding is None:
-        # Landmarks might be None or have values, but embedding failed
-        raise HTTPException(status_code=400, detail="Could not process query image or detect face for embedding.")
+    try:
+        image_bytes = await file.read()
+        image_np_bgr = utils.decode_image(image_bytes)
+        if image_np_bgr is None:
+             raise HTTPException(status_code=400, detail="Could not decode query image.")
 
-    best_match_label = "unknown"
-    highest_similarity = -1.0
-    best_matching_entry = None # To store the specific dict {"embedding": ..., "image_filename": ...}
+        # Process image to get results for ALL detected faces
+        all_face_results = processing.process_image_full(
+            image_np_bgr=image_np_bgr,
+            detection_session=detection_session,
+            embedding_session=embedding_session,
+            landmark_session=landmark_session if extract_landmarks else None, # Pass session only if needed
+            extract_68_landmarks=extract_landmarks
+        )
 
-    # Convert query embedding (list) back to numpy array for cosine_similarity
-    query_embedding_np = np.array(query_embedding).reshape(1, -1)
+        if not all_face_results:
+             # No faces detected at all.
+             raise HTTPException(status_code=400, detail="No faces detected in the query image.")
 
-    for label, entries_list in registered_embeddings.items():
-        if not entries_list: # Skip empty lists for this label
-            continue
+        # --- Find Best Match Across All Detected Faces ---
+        overall_best_match_label = "unknown"
+        overall_highest_similarity = -1.0
+        overall_best_matching_entry = None # Info about the matched gallery entry
+        best_query_face_result = None # Info about the query face that gave the best match
 
-        # Extract embeddings for this label (assuming new structure)
-        embeddings_for_label = [entry["embedding"] for entry in entries_list if isinstance(entry, dict) and "embedding" in entry]
-        if not embeddings_for_label:
-            continue # Skip if no valid embeddings found for this label
+        # Iterate through each detected face in the query image
+        for query_face in all_face_results:
+            if query_face.embedding is None:
+                print(f"Skipping comparison for face @ {query_face.detection.box} (no embedding generated).")
+                continue # Skip faces where embedding failed
 
-        # Convert list of embedding lists to numpy array for comparison
-        embeddings_np = np.array(embeddings_for_label)
+            query_embedding_np = np.array(query_face.embedding).reshape(1, -1)
+            current_face_best_label = "unknown"
+            current_face_highest_similarity = -1.0
+            current_face_best_entry = None
 
-        # Calculate similarity against all embeddings for the label
-        similarities = cosine_similarity(query_embedding_np, embeddings_np)
-        # Get the max similarity for this label
-        max_similarity_for_label = np.max(similarities)
+            # Compare this query face's embedding against all registered embeddings
+            for label, entries_list in registered_embeddings.items():
+                if not entries_list: continue
 
-        # Find the index of the embedding within this label that gave the max similarity
-        best_index_for_label = np.argmax(similarities)
-        current_max_similarity = similarities[0, best_index_for_label] # Max similarity for this label
+                embeddings_for_label = [entry["embedding"] for entry in entries_list if isinstance(entry, dict) and "embedding" in entry]
+                if not embeddings_for_label: continue
 
-        if current_max_similarity > highest_similarity:
-            highest_similarity = current_max_similarity
-            best_match_label = label
-            # Store the specific entry (dict) that matched best
-            best_matching_entry = entries_list[best_index_for_label]
+                embeddings_np = np.array(embeddings_for_label)
+                similarities = cosine_similarity(query_embedding_np, embeddings_np)
+                max_similarity_for_label = np.max(similarities)
+                best_index_for_label = np.argmax(similarities)
 
-    # You might want a threshold here
-    similarity_threshold = 0.5 # Example threshold
-    if highest_similarity < similarity_threshold:
-         best_match_label = "unknown" # Below threshold
-         best_matching_entry = None # No match above threshold
+                # Check if this label gives a better match *for the current query face*
+                if max_similarity_for_label > current_face_highest_similarity:
+                    current_face_highest_similarity = max_similarity_for_label
+                    current_face_best_label = label
+                    current_face_best_entry = entries_list[best_index_for_label]
 
-    print(f"Recognition result: Label='{best_match_label}', Similarity={highest_similarity:.4f}")
+            # Now, check if the best match for *this query face* is better than the *overall best match* found so far
+            if current_face_highest_similarity > overall_highest_similarity:
+                overall_highest_similarity = current_face_highest_similarity
+                overall_best_match_label = current_face_best_label
+                overall_best_matching_entry = current_face_best_entry
+                best_query_face_result = query_face # Store the query face that yielded this best match
 
-    # Prepare response data
-    matched_embedding_data = best_matching_entry.get("embedding") if best_matching_entry else None
-    matched_filename_data = best_matching_entry.get("image_filename") if best_matching_entry else None
+        # --- Prepare Response ---
+        print(f"Overall best recognition result: Label='{overall_best_match_label}', Similarity={overall_highest_similarity:.4f}, Landmarks requested: {extract_landmarks}")
 
-    return RecognitionResponse(
-        label=best_match_label,
-        similarity=float(highest_similarity),
-        query_embedding=query_embedding,
-        matched_embedding=matched_embedding_data,
-        matched_image_filename=matched_filename_data,
-        query_landmarks=query_landmarks # Add landmarks to response
-    )
+        # Apply threshold to the overall best match found
+        if overall_highest_similarity < config.SIMILARITY_THRESHOLD:
+            overall_best_match_label = "unknown"
+            overall_best_matching_entry = None
+            # Keep overall_highest_similarity as is for info
 
-@app.get("/registered")
+        # Prepare response data based on the overall best match
+        matched_embedding_data = overall_best_matching_entry.get("embedding") if overall_best_matching_entry else None
+        matched_filename_data = overall_best_matching_entry.get("image_filename") if overall_best_matching_entry else None
+
+        # Get the query embedding and landmarks from the specific query face that resulted in the best match
+        # OR from the highest-scoring detected face if no match was found above threshold
+        query_embedding_for_response = None
+        query_landmarks_5pt_for_response = None
+        query_landmarks_68pt_for_response = None
+
+        if best_query_face_result: # If a match (even below threshold) was found
+             query_embedding_for_response = best_query_face_result.embedding
+             query_landmarks_5pt_for_response = best_query_face_result.detection.landmarks_5pt
+             query_landmarks_68pt_for_response = best_query_face_result.landmarks_68pt if extract_landmarks else None
+        elif all_face_results: # If no match found at all, but faces were detected
+             # Use the highest scoring detected face (index 0) for landmark display
+             highest_scoring_face = all_face_results[0]
+             query_embedding_for_response = highest_scoring_face.embedding # Might be None
+             query_landmarks_5pt_for_response = highest_scoring_face.detection.landmarks_5pt
+             query_landmarks_68pt_for_response = highest_scoring_face.landmarks_68pt if extract_landmarks else None
+             print("No match above threshold found. Returning landmarks from highest scoring detected face.")
+
+
+        return models.RecognitionResponse(
+            label=overall_best_match_label,
+            similarity=float(overall_highest_similarity),
+            query_embedding=query_embedding_for_response,
+            matched_embedding=matched_embedding_data,
+            matched_image_filename=matched_filename_data,
+            query_landmarks_5pt=query_landmarks_5pt_for_response,
+            query_landmarks_68pt=query_landmarks_68pt_for_response
+        )
+
+    except HTTPException as http_exc:
+        # Re-raise HTTP exceptions directly
+        raise http_exc
+    except Exception as e:
+        # Handle other unexpected errors
+        print(f"Error during recognition: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"An internal error occurred during recognition: {e}")
+    finally:
+        # Ensure file is closed in all cases (success, HTTPException, other Exception)
+        await file.close()
+
+
+@app.get("/registered", response_model=models.RegisteredLabelsResponse)
 async def get_registered_faces():
     """Returns a list of labels with registered faces."""
     return {"labels": list(registered_embeddings.keys())}
 
-@app.get("/gallery_data")
-async def get_gallery_data():
-    """Returns the complete dictionary of registered labels and their embeddings."""
-    # Ensure embeddings are loaded (though they should be loaded at startup)
-    if not registered_embeddings and os.path.exists(EMBEDDINGS_FILE):
-        load_embeddings() # Reload if empty but file exists
-    # Return the structure {label: [{"embedding": [...], "image_path": "..."}, ...]}
-    return registered_embeddings
 
-# --- Endpoint to serve gallery images ---
-@app.get("/images/{filename:str}") # Expect filename only
+@app.delete("/delete_entry")
+async def delete_entry(label: str = Query(...), filename: str = Query(...)):
+    """
+    Deletes a specific registered face entry (embedding and image)
+    identified by its label and image filename.
+    """
+    global registered_embeddings # Ensure we modify the global dict
+
+    if label not in registered_embeddings:
+        raise HTTPException(status_code=404, detail=f"Label '{label}' not found.")
+
+    # Find the index of the entry with the matching filename
+    entry_index = -1
+    entries_list = registered_embeddings[label]
+    for i, entry in enumerate(entries_list):
+        if isinstance(entry, dict) and entry.get("image_filename") == filename:
+            entry_index = i
+            break
+
+    if entry_index == -1:
+        raise HTTPException(status_code=404, detail=f"Entry with filename '{filename}' not found for label '{label}'.")
+
+    # --- Deletion Process ---
+    image_path = os.path.join(config.GALLERY_DIR, filename)
+    deleted_entry_info = f"label='{label}', filename='{filename}'" # For logging
+
+    try:
+        # 1. Remove entry from the dictionary
+        del entries_list[entry_index]
+        print(f"Removed entry {deleted_entry_info} from in-memory data.")
+
+        # 2. If the label list is now empty, remove the label itself
+        if not entries_list:
+            del registered_embeddings[label]
+            print(f"Removed empty label '{label}' from in-memory data.")
+
+        # 3. Save the updated embeddings data
+        persistence.save_embeddings(registered_embeddings, config.EMBEDDINGS_FILE)
+
+        # 4. Delete the image file
+        if os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+                print(f"Deleted image file: {image_path}")
+            except OSError as e:
+                # Log error but don't necessarily fail the request if DB entry was removed
+                print(f"Warning: Could not delete image file {image_path}: {e}")
+                # Optionally, you could raise an exception here if file deletion is critical
+        else:
+            print(f"Warning: Image file not found for deletion: {image_path}")
+
+        return {"message": f"Successfully deleted entry: {deleted_entry_info}"}
+
+    except Exception as e:
+        # Attempt to reload embeddings from file in case of partial failure?
+        # Or just report the error. For simplicity, report error.
+        print(f"Error during deletion of {deleted_entry_info}: {e}")
+        traceback.print_exc()
+        # Consider reloading embeddings here to ensure consistency if save failed mid-way
+        # registered_embeddings = persistence.load_embeddings(config.EMBEDDINGS_FILE)
+        raise HTTPException(status_code=500, detail=f"An internal error occurred during deletion: {e}")
+
+
+@app.get("/gallery_data", response_model=models.GalleryDataResponse)
+async def get_gallery_data():
+    """Returns the complete dictionary of registered labels and their associated data."""
+    # Ensure embeddings are loaded (should be at startup, but double-check)
+    # This check might be redundant if load_embeddings is robust at startup
+    # if not registered_embeddings and os.path.exists(config.EMBEDDINGS_FILE):
+    #     global registered_embeddings
+    #     registered_embeddings = persistence.load_embeddings(config.EMBEDDINGS_FILE)
+    return {"data": registered_embeddings}
+
+
+@app.get("/images/{filename:path}") # Use path converter to handle potential subdirs if needed later
 async def get_image(filename: str):
     """Serves an image file from the gallery directory using its filename."""
-    # Construct the full path safely
-    base_dir = os.path.abspath(GALLERY_DIR)
+    base_dir = os.path.abspath(config.GALLERY_DIR)
     requested_path = os.path.abspath(os.path.join(base_dir, filename))
 
     # Security check: Ensure the resolved path is still within the gallery directory
-    # and prevent accessing unintended files like '..'
-    if not requested_path.startswith(base_dir) or ".." in filename:
+    if not requested_path.startswith(base_dir) or ".." in filename or filename.startswith("/"):
         print(f"Forbidden access attempt: {filename}")
         raise HTTPException(status_code=403, detail="Forbidden: Access denied.")
 
@@ -570,16 +371,22 @@ async def get_image(filename: str):
         print(f"Image not found: {filename} (Resolved: {requested_path})")
         raise HTTPException(status_code=404, detail="Image not found.")
 
-    # Use FileResponse to send the image
     return FileResponse(requested_path)
 
 
+# --- Main Execution ---
 if __name__ == "__main__":
     import uvicorn
-    # Make sure the FaceONNX.Models path is correct relative to where you run uvicorn
-    print(f"Models expected in: {os.path.abspath(MODEL_DIR)}")
-    print(f"Detection model: {os.path.abspath(DETECTION_MODEL_PATH)}")
-    # print(f"Landmark model: {os.path.abspath(LANDMARK_MODEL_PATH)}") # Removed
-    print(f"Embedding model: {os.path.abspath(EMBEDDING_MODEL_PATH)}")
-    print(f"Embeddings file: {os.path.abspath(EMBEDDINGS_FILE)}") # Added print for embeddings file path
+    print("-" * 30)
+    print("Starting Face Recognition API Server")
+    print(f"Gallery directory: {os.path.abspath(config.GALLERY_DIR)}")
+    print(f"Embeddings file: {os.path.abspath(config.EMBEDDINGS_FILE)}")
+    print(f"Detection model: {os.path.abspath(config.DETECTION_MODEL_PATH)}")
+    print(f"Embedding model: {os.path.abspath(config.EMBEDDING_MODEL_PATH)}")
+    print(f"Landmark model: {os.path.abspath(config.LANDMARK_68_MODEL_PATH)}")
+    print(f"Similarity threshold: {config.SIMILARITY_THRESHOLD}")
+    print(f"ONNX Providers: {config.PROVIDERS}")
+    print(f"Loaded {sum(len(v) for v in registered_embeddings.values())} embeddings for {len(registered_embeddings)} labels.")
+    print("-" * 30)
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

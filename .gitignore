@@ -3,3 +3,4 @@
 .vs
 gallery_images/
 backend/embeddings.json
+*.pyc

@@ -11,4 +11,7 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    allowedHosts: ['webcam.elsoft.org', 'facereg.elsoft.org', 'facecam.elsoft.org'],
+  },
 })
