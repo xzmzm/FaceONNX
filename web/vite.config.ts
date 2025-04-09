@@ -12,6 +12,6 @@ export default defineConfig({
     },
   },
   server: {
-    allowedHosts: ['webcam.elsoft.org', 'facereg.elsoft.org', 'facecam.elsoft.org'],
+    allowedHosts: ['webcam.elsoft.org', 'facereg.elsoft.org', 'facecam.elsoft.org', 'win10-pc', 'win10-pc-1'],
   },
 })
