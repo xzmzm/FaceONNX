@@ -9,7 +9,7 @@ function App() {
   return (
     <div className="min-h-screen flex flex-col items-center p-4 bg-background text-foreground">
       <header className="w-full max-w-4xl mb-8">
-        <h1 className="text-3xl font-bold text-center mb-4">Face Recognition App</h1>
+        <h1 className="text-3xl font-bold text-center mb-4">Elsoft Face Recognition</h1>
         <nav className="flex justify-center space-x-4">
           <Button variant="link" asChild>
             <Link to="/register">Register</Link>
