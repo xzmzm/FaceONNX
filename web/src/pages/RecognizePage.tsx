@@ -49,38 +49,51 @@ const RecognizePage: React.FC = () => {
   const [imageSrc, setImageSrc] = useState<string | null>(null); // For uploaded image preview or webcam snapshot (base64)
   const [activeTab, setActiveTab] = useState('upload'); // Track active tab
   const webcamRef = useRef<Webcam>(null);
-  const [isRecognizing, setIsRecognizing] = useState(false);
+  const [isManualRecognizing, setIsManualRecognizing] = useState(false); // Renamed for clarity
   const [recognitionResult, setRecognitionResult] = useState<RecognitionResult | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
-  // Combined state: controls both requesting 68 landmarks AND showing the overlay
-  const [showKeypoints, setShowKeypoints] = useState(false);
+  // Landmarks are now always requested and shown if available
+  // const [showKeypoints, setShowKeypoints] = useState(false); // Removed: Landmarks always enabled
   const queryImageRef = useRef<HTMLImageElement>(null); // Ref to get query image dimensions
+  const [isAutoRecognizing, setIsAutoRecognizing] = useState(false);
+  // const [isProcessingFrame, setIsProcessingFrame] = useState(false); // Using ref instead
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const recognitionInProgressRef = useRef(false); // Ref to track if a recognition call is active
+  const autoRecognizeInterval = 1000; // ms, e.g., 1 FPS. Adjust as needed.
 
-  const handleRecognize = async () => {
-    if (!imageSrc) {
-      toast.error('Please provide an image/snapshot to recognize.');
+  const handleRecognize = async (imageDataUrl: string | null = null) => {
+    const currentImage = imageDataUrl ?? imageSrc; // Use provided image or state
+    if (!currentImage) {
+      // This case should ideally not happen in auto-mode if screenshot is always provided
+      // For manual mode, the button is disabled if !imageSrc
+      toast.error('No image data available for recognition.');
       return;
     }
-    setIsRecognizing(true);
-    setRecognitionResult(null); // Clear previous result
-    toast.info('Recognizing face...');
+
+    // Use ref to prevent overlapping calls more reliably
+    if (recognitionInProgressRef.current) {
+        console.log("Recognition already in progress, skipping frame.");
+        return;
+    }
+    recognitionInProgressRef.current = true;
+
+    // Don't clear results immediately in auto mode, let it update
+    // setRecognitionResult(null);
+    // Only show toast for manual clicks
+    if (!imageDataUrl) {
+        toast.info('Recognizing face...');
+    }
 
     try {
-      // Convert base64 image to Blob
-      const fetchRes = await fetch(imageSrc);
+      const fetchRes = await fetch(currentImage);
       const blob = await fetchRes.blob();
-
       const formData = new FormData();
-      // Use a consistent filename, the backend doesn't rely on it
       formData.append('file', blob, 'face_image.jpg');
 
-      // Use environment variable for backend URL and add query param if needed
       const url = new URL(`${import.meta.env.VITE_BACKEND_URL}/recognize`);
-      if (showKeypoints) { // Use the combined state here
-        url.searchParams.append('extract_landmarks', 'true');
-      }
-      console.log("Requesting URL:", url.toString()); // Log the request URL
+      url.searchParams.append('extract_landmarks', 'true');
+      // console.log("Requesting URL:", url.toString()); // Less verbose logging
 
       const response = await fetch(url.toString(), {
         method: 'POST',
@@ -93,16 +106,33 @@ const RecognizePage: React.FC = () => {
         throw new Error(result.detail || `HTTP error! status: ${response.status}`);
       }
 
-      setRecognitionResult(result); // Store the result {label: string, similarity: float}
-      toast.success(`Recognition complete.`);
+      setRecognitionResult(result);
+      // Only update imageSrc if it was from auto-recognize to show the *processed* frame
+      if (imageDataUrl) {
+          setImageSrc(imageDataUrl);
+      }
+      // Don't toast success in auto mode, too noisy
+      // toast.success(`Recognition complete.`);
 
     } catch (error) {
       console.error('Recognition failed:', error);
-      toast.error(`Recognition failed: ${error instanceof Error ? error.message : String(error)}`);
-      setRecognitionResult(null);
+      // Avoid flooding toasts in auto mode
+      if (!isAutoRecognizing) {
+          toast.error(`Recognition failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      setRecognitionResult(null); // Clear result on error
     } finally {
-      setIsRecognizing(false);
+      recognitionInProgressRef.current = false;
     }
+  };
+
+  // Wrapper for the manual recognize button
+  const handleManualRecognize = () => {
+      if (isAutoRecognizing || recognitionInProgressRef.current) return; // Don't allow manual trigger if auto is on or processing
+      setIsManualRecognizing(true); // Show loading state on button
+      handleRecognize().finally(() => {
+          setIsManualRecognizing(false); // Hide loading state
+      });
   };
 
   // --- Fetch devices ---
@@ -127,11 +157,48 @@ const RecognizePage: React.FC = () => {
       }
     };
     getDevices();
-  }, []); // Run once on mount
+  }, [selectedDeviceId]); // Re-run if selectedDeviceId changes? No, device fetch is once. Keep []
   // --- End Fetch devices ---
+
+  // --- Auto Recognition Loop ---
+  useEffect(() => {
+    if (isAutoRecognizing && activeTab === 'webcam') {
+      intervalRef.current = setInterval(async () => {
+        if (recognitionInProgressRef.current) {
+          // console.log("Skipping frame due to ongoing recognition.");
+          return; // Don't capture if the previous one is still processing
+        }
+        if (webcamRef.current) {
+          const screenshot = webcamRef.current.getScreenshot();
+          if (screenshot) {
+            // Don't await here, let it run in the background
+            handleRecognize(screenshot);
+          }
+        }
+      }, autoRecognizeInterval); // Interval time
+    } else {
+      // Clear interval if auto-recognizing stops or tab changes
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    }
+
+    // Cleanup function
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+        recognitionInProgressRef.current = false; // Reset flag on cleanup
+      }
+    };
+    // Depend on isAutoRecognizing and activeTab to start/stop the interval correctly
+  }, [isAutoRecognizing, activeTab, autoRecognizeInterval]);
+  // --- End Auto Recognition Loop ---
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setRecognitionResult(null); // Clear result on new file
+    setIsAutoRecognizing(false); // Stop auto if user uploads file
     const file = event.target.files?.[0];
     if (file) {
       const reader = new FileReader();
@@ -144,6 +211,7 @@ const RecognizePage: React.FC = () => {
 
   const handleWebcamCapture = useCallback(() => {
     setRecognitionResult(null); // Clear result on new capture
+    setIsAutoRecognizing(false); // Stop auto if user takes manual snapshot
     if (webcamRef.current) {
       const image = webcamRef.current.getScreenshot();
       if (image) {
@@ -163,14 +231,14 @@ const RecognizePage: React.FC = () => {
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Clear image preview when switching tabs */}
-        <Tabs value={activeTab} onValueChange={(value) => { setImageSrc(null); setRecognitionResult(null); setActiveTab(value); }}>
+        <Tabs value={activeTab} onValueChange={(value) => { setImageSrc(null); setRecognitionResult(null); setIsAutoRecognizing(false); setActiveTab(value); }}>
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="upload">Upload File</TabsTrigger>
             <TabsTrigger value="webcam">Use Webcam</TabsTrigger>
           </TabsList>
           <TabsContent value="upload" className="mt-4 space-y-4">
              <Label htmlFor="picture">Upload Picture</Label>
-             <Input id="picture" type="file" accept="image/*" onChange={handleFileChange} disabled={isRecognizing} />
+             <Input id="picture" type="file" accept="image/*" onChange={handleFileChange} disabled={isManualRecognizing} />
              {/* Query Image Preview Area */}
              {activeTab === 'upload' && imageSrc && (
                 <div className="relative mt-2 mx-auto max-h-60 w-fit"> {/* Container for image and overlay */}
@@ -181,8 +249,8 @@ const RecognizePage: React.FC = () => {
                       className="block max-h-60 rounded border" // Ensure image is block for layout
                       onLoad={() => { /* Could trigger redraw if needed */ }}
                    />
-                   {/* Landmark Overlay - Visibility controlled by showKeypoints */}
-                   {showKeypoints && queryImageRef.current && (recognitionResult?.query_landmarks_5pt || recognitionResult?.query_landmarks_68pt) && (
+                   {/* Landmark Overlay - Always shown if landmarks available */}
+                   {queryImageRef.current && (recognitionResult?.query_landmarks_5pt || recognitionResult?.query_landmarks_68pt) && ( // Removed showKeypoints condition
                      <svg
                        className="absolute top-0 left-0 w-full h-full pointer-events-none"
                        viewBox={`0 0 ${queryImageRef.current.naturalWidth} ${queryImageRef.current.naturalHeight}`}
@@ -251,7 +319,7 @@ const RecognizePage: React.FC = () => {
                    value={selectedDeviceId || ''}
                    onChange={(e) => setSelectedDeviceId(e.target.value)}
                    className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" // Basic styling similar to shadcn Select
-                   disabled={isRecognizing}
+                   disabled={isAutoRecognizing || recognitionInProgressRef.current}
                  >
                    {devices.map((device) => (
                      <option key={device.deviceId} value={device.deviceId}>
@@ -280,8 +348,8 @@ const RecognizePage: React.FC = () => {
                       className="block max-h-60 rounded border"
                       onLoad={() => { /* Could trigger redraw if needed */ }}
                    />
-                   {/* Landmark Overlay - Visibility controlled by showKeypoints */}
-                   {showKeypoints && queryImageRef.current && (recognitionResult?.query_landmarks_5pt || recognitionResult?.query_landmarks_68pt) && (
+                   {/* Landmark Overlay - Always shown if landmarks available */}
+                   {queryImageRef.current && (recognitionResult?.query_landmarks_5pt || recognitionResult?.query_landmarks_68pt) && ( // Removed showKeypoints condition
                      <svg
                        className="absolute top-0 left-0 w-full h-full pointer-events-none"
                        viewBox={`0 0 ${queryImageRef.current.naturalWidth} ${queryImageRef.current.naturalHeight}`}
@@ -339,26 +407,38 @@ const RecognizePage: React.FC = () => {
                    )}
                 </div>
              )}
-            <Button onClick={handleWebcamCapture} disabled={isRecognizing}>Take Snapshot</Button>
+            <div className="flex space-x-2"> {/* Container for buttons */}
+               <Button onClick={handleWebcamCapture} disabled={isAutoRecognizing || recognitionInProgressRef.current}>Take Snapshot</Button>
+               <Button
+                  onClick={() => setIsAutoRecognizing(!isAutoRecognizing)}
+                  disabled={recognitionInProgressRef.current}
+                  variant={isAutoRecognizing ? "destructive" : "default"} // Style change when active
+                >
+                  {isAutoRecognizing ? 'Stop Auto Recognize' : 'Start Auto Recognize'}
+                </Button>
+            </div>
           </TabsContent>
         </Tabs>
 
-        {/* Combined Recognize Button and Show Keypoints Toggle */}
-        <div className="flex items-center justify-center space-x-4 pt-2">
-           <Button onClick={handleRecognize} disabled={!imageSrc || isRecognizing} className="flex-grow"> {/* Button takes available space */}
-             {isRecognizing ? 'Recognizing...' : 'Recognize Face'}
-           </Button>
-           {/* Show Keypoints Toggle */}
-           <div className="flex items-center space-x-2 flex-shrink-0"> {/* Prevent toggle from shrinking */}
-              <Switch
-                 id="show-keypoints-toggle"
-                 checked={showKeypoints}
-                 onCheckedChange={setShowKeypoints}
-                 disabled={isRecognizing}
-              />
-              <Label htmlFor="show-keypoints-toggle" className="text-sm whitespace-nowrap">Show Keypoints</Label> {/* Prevent wrapping */}
-           </div>
-        </div>
+        {/* Recognize Button (Only for Upload Tab) */}
+        {activeTab === 'upload' && (
+            <div className="flex items-center justify-center pt-2">
+                <Button onClick={handleManualRecognize} disabled={!imageSrc || isManualRecognizing} className="w-full">
+                    {isManualRecognizing ? 'Recognizing...' : 'Recognize Face'}
+                </Button>
+            </div>
+        )}
+        {/* Keypoints Toggle Removed */}
+           {/* <div className="flex items-center space-x-2 flex-shrink-0"> */}
+              {/* <Switch */}
+                 {/* id="show-keypoints-toggle" */}
+                 {/* checked={showKeypoints} */}
+                 {/* onCheckedChange={setShowKeypoints} */}
+                 {/* disabled={isRecognizing} */}
+              {/* /> */}
+              {/* <Label htmlFor="show-keypoints-toggle" className="text-sm whitespace-nowrap">Show Keypoints</Label> */}
+           {/* </div> */}
+        {/* Removed stray closing div */}
 
         {/* --- Recognition Result Display --- */}
         {recognitionResult && (
