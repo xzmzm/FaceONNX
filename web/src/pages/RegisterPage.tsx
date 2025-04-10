@@ -181,23 +181,43 @@ const RegisterPage: React.FC = () => {
     return () => { document.removeEventListener('paste', handlePaste); };
   }, [handlePaste]);
 
-  const handleWebcamCapture = useCallback(() => {
+  const handleWebcamCapture = useCallback((): string | null => {
     if (webcamRef.current) {
       const image = webcamRef.current.getScreenshot();
       if (image) {
-        setImageSrc(image);
-        toast.success('Snapshot captured!');
+        setImageSrc(image); // Still set state for preview in dialog
+        return image; // Return the captured image data
       } else {
-        toast.error('Could not capture snapshot.');
+        return null; // Indicate failure
       }
     }
+    return null; // Indicate failure if no webcam ref
   }, [webcamRef]);
 
   const handleRegisterClick = async () => {
-    if (!imageSrc) {
-      toast.error('Please provide an image or snapshot first.');
+    let currentImageSrc: string | null = imageSrc; // Start with current state
+
+    // If webcam tab is active, capture snapshot first
+    if (activeTab === 'webcam') {
+      const capturedSrc = handleWebcamCapture(); // Returns string | null
+      if (!capturedSrc) {
+        toast.error('Could not capture snapshot. Please ensure the camera is working and try again.');
+        return;
+      }
+      currentImageSrc = capturedSrc; // Use the directly returned source
+    } else if (!currentImageSrc) { // Check only if not webcam tab (upload/paste)
+      toast.error('Please provide an image first (upload or paste).');
       return;
     }
+
+    // Now check the definitive image source *before* opening dialog
+    if (!currentImageSrc) {
+        // This message should ideally not be hit if the logic above is correct, but acts as a safeguard.
+        toast.error('Image source is missing. Please capture or upload an image.');
+        return;
+    }
+    // Note: The imageSrc state *is* set by handleWebcamCapture/handleFileSelect
+    // and will be used by the Dialog's preview, which renders after this function completes.
     setDialogLabelInput(''); // Reset input
     setUserNameMode('new'); // Default to new user tab
     setIsDialogOpen(true);
@@ -310,14 +330,15 @@ const RegisterPage: React.FC = () => {
                 className="rounded border w-full max-w-xs"
                 videoConstraints={{ deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined }}
              />
-             {activeTab === 'webcam' && imageSrc && <img src={imageSrc} alt="Snapshot Preview" className="mt-2 max-h-40 rounded border" />}
-             <Button onClick={handleWebcamCapture} disabled={isSubmitting}>Take Snapshot</Button>
+             {/* Snapshot button and preview removed */}
            </TabsContent>
          </Tabs>
 
-        <Button onClick={handleRegisterClick} disabled={!imageSrc || isSubmitting} className="w-full">
-          {isSubmitting ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Registering...</> : 'Register Face'}
-        </Button>
+        <div className="flex justify-center"> {/* Center the button */}
+          <Button onClick={handleRegisterClick} disabled={(activeTab === 'upload-image' && !imageSrc) || isSubmitting}> {/* Removed w-full */}
+            {isSubmitting ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Registering...</> : 'Register Face'}
+          </Button>
+        </div>
 
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogContent className="sm:max-w-[425px]">
@@ -327,7 +348,13 @@ const RegisterPage: React.FC = () => {
                 Enter a new user name or select an existing one to add this face to their gallery.
               </DialogDescription>
             </DialogHeader>
-            <div className="py-4">
+            <div className="py-4 space-y-4"> {/* Added space-y-4 */}
+              {/* Image Preview */}
+              {imageSrc && (
+                <div className="flex justify-center">
+                  <img src={imageSrc} alt="Face to register" className="max-h-40 rounded border object-contain" />
+                </div>
+              )}
               {isLoadingLabels ? (
                 <div className="flex items-center justify-center space-x-2 h-24"> {/* Added height for loading state */}
                   <Loader2 className="h-5 w-5 animate-spin" />
