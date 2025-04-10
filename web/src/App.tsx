@@ -11,13 +11,13 @@ function App() {
       <header className="w-full max-w-4xl mb-8">
         <h1 className="text-3xl font-bold text-center mb-4">Elsoft Face Recognition</h1>
         <nav className="flex justify-center space-x-4">
-          <Button variant="link" asChild>
+          <Button variant="link" size="lg" asChild>
             <Link to="/register">Register</Link>
           </Button>
-          <Button variant="link" asChild>
+          <Button variant="link" size="lg" asChild>
             <Link to="/recognize">Recognize</Link>
           </Button>
-          <Button variant="link" asChild>
+          <Button variant="link" size="lg" asChild>
             <Link to="/gallery">Gallery</Link>
           </Button>
         </nav>
