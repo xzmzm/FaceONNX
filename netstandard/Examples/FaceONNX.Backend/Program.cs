@@ -5,6 +5,12 @@ using System.Text.Json; // For JsonNamingPolicy
 
 var builder = WebApplication.CreateBuilder(args);
 
+// --- Configure Kestrel to listen on port 8000 ---
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.ListenLocalhost(8000);
+});
+
 // --- Configure Services ---
 
 // 1. Add CORS
@@ -63,7 +69,6 @@ app.UseStaticFiles(new StaticFileOptions
     FileProvider = new PhysicalFileProvider(galleryPath),
     RequestPath = "/images" // Serve gallery images from /images path
 });
-
 
 app.UseCors(AllowSpecificOrigins);
 

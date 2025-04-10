@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { toast } from 'sonner';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+// Removed Recharts imports: BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell
 import { Button } from '@/components/ui/button'; // Import Button
 import { Trash2 } from 'lucide-react'; // Import an icon for delete
 import {
@@ -15,8 +15,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from "@/components/ui/alert-dialog" // Import Alert Dialog
-
+} from "@/components/ui/alert-dialog"; // Import Alert Dialog
+import EmbeddingHeatmap from '@/components/EmbeddingHeatmap'; // Import the new component
 // Define the expected structure for a single registered entry
 interface GalleryEntry {
   embedding: number[]; // List of 512 floats
@@ -28,15 +28,10 @@ interface GalleryData {
   [label: string]: GalleryEntry[]; // Label maps to a list of entries
 }
 
-// Helper function to format embedding data for recharts
-const formatEmbeddingDataForChart = (embedding: number[]) => {
-  if (!embedding) return [];
-  return embedding.map((value, index) => ({
-    index: index, // Index of the value (0-511)
-    value: value   // The actual float value
-  }));
-};
+// Removed helper functions formatEmbeddingDataForChart, lerp, rgbToHex, getColorForEmbeddingValue
+// These are now encapsulated within the EmbeddingHeatmap component
 
+// --- Gallery Page Component ---
 const GalleryPage: React.FC = () => {
   const [galleryData, setGalleryData] = useState<GalleryData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -79,6 +74,7 @@ const GalleryPage: React.FC = () => {
 
     fetchData();
   }, []);
+
 
   // --- Delete Handler ---
   const handleDeleteEntry = async (labelToDelete: string, filenameToDelete: string) => {
@@ -137,6 +133,8 @@ const GalleryPage: React.FC = () => {
     }
   };
   // --- End Delete Handler ---
+
+  // --- Render Logic ---
 
   return (
     <Card className="w-full max-w-4xl"> {/* Even wider card */}
@@ -214,27 +212,13 @@ const GalleryPage: React.FC = () => {
                                <AccordionItem value="embedding-chart">
                                  <AccordionTrigger className="text-xs">Show Embedding Chart</AccordionTrigger>
                                  <AccordionContent>
+                                   {/* Use the new EmbeddingHeatmap component */}
                                    {entry.embedding && entry.embedding.length > 0 ? (
-                                     <div style={{ width: '100%', height: 150 }}> {/* Fixed height container */}
-                                       <ResponsiveContainer>
-                                         <BarChart
-                                           data={formatEmbeddingDataForChart(entry.embedding)}
-                                           margin={{ top: 5, right: 5, left: -30, bottom: 5 }} // Adjust margins
-                                           barGap={0} // No gap between bars for dense view
-                                           barCategoryGap={0}
-                                         >
-                                           <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                           <XAxis dataKey="index" hide /> {/* Hide X-axis labels (too many) */}
-                                           <YAxis domain={['auto', 'auto']} tick={{ fontSize: 10 }} />
-                                           <Tooltip
-                                             contentStyle={{ fontSize: 10, padding: '2px 5px' }}
-                                             labelFormatter={(label) => `Index: ${label}`}
-                                             formatter={(value: number) => [value.toFixed(4), 'Value']}
-                                           />
-                                           <Bar dataKey="value" fill="#8884d8" />
-                                         </BarChart>
-                                       </ResponsiveContainer>
-                                     </div>
+                                     <EmbeddingHeatmap
+                                       embedding={entry.embedding}
+                                       width={512} // Explicitly set desired display width
+                                       height={50} // Explicitly set desired display height
+                                     />
                                    ) : (
                                      <p className="text-xs text-muted-foreground">Embedding data not available.</p>
                                    )}

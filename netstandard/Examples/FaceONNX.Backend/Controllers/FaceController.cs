@@ -14,7 +14,7 @@ using System.Threading.Tasks;
 namespace FaceONNX.Backend.Controllers
 {
     [ApiController]
-    [Route("")] // Route actions directly from root (e.g., /register)
+    [Route("api")]
     public class FaceController : ControllerBase
     {
         private readonly ConfigurationService _configService;
