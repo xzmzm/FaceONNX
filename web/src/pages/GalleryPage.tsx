@@ -90,7 +90,7 @@ const GalleryPage: React.FC = () => {
     toast.info(`Deleting entry for ${labelToDelete}...`);
     try {
       const backendBaseUrl = import.meta.env.VITE_BACKEND_URL;
-      const deleteUrl = new URL(`${backendBaseUrl}/delete_entry`);
+      const deleteUrl = new URL(`${backendBaseUrl}/delete_entry`, window.location.origin);
       deleteUrl.searchParams.append('label', labelToDelete);
       deleteUrl.searchParams.append('filename', filenameToDelete);
 

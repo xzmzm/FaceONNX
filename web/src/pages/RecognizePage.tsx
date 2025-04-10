@@ -101,7 +101,7 @@ interface DetailedMediaDeviceInfo {
       const formData = new FormData();
       formData.append('file', blob, 'face_image.jpg');
 
-      const url = new URL(`${import.meta.env.VITE_BACKEND_URL}/recognize`);
+      const url = new URL(`${import.meta.env.VITE_BACKEND_URL}/recognize`, window.location.origin);
       url.searchParams.append('extract_landmarks', 'true');
       // console.log("Requesting URL:", url.toString()); // Less verbose logging
 

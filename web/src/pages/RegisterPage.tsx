@@ -251,7 +251,7 @@ const RegisterPage: React.FC = () => {
   };
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full"> {/* Removed max-w-md */}
       <CardHeader>
         <CardTitle>Register New Face</CardTitle>
         <CardDescription>Provide an image via upload or webcam, then confirm the user name.</CardDescription>

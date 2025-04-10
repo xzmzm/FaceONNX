@@ -13,6 +13,8 @@ namespace FaceONNX.Backend.Services
         private static readonly string _baseDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? Directory.GetCurrentDirectory();
 
         // Gallery directory relative to the backend project's output directory
+        public string WebAppDirectory { get; } = Path.Combine(_baseDirectory, "webapp");
+        // Gallery directory relative to the backend project's output directory
         public string GalleryDirectory { get; } = Path.Combine(_baseDirectory, "GalleryData");
 
         // Embeddings file path
