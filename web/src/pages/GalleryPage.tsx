@@ -149,7 +149,7 @@ const GalleryPage: React.FC = () => {
           <Accordion type="multiple" className="w-full">
             {Object.entries(galleryData).map(([label, entries]) => (
               <AccordionItem value={label} key={label}>
-                <AccordionTrigger className="text-xl font-semibold">{label} ({entries?.length || 0} entries)</AccordionTrigger>
+                <AccordionTrigger className="text-xl font-semibold">{label} ({entries?.length || 0} {entries?.length === 1 ? 'entry' : 'entries'})</AccordionTrigger>
                 <AccordionContent>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
                     {entries.map((entry, index) => {
