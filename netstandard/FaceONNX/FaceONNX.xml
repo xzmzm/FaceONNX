@@ -218,6 +218,46 @@
             Destructor.
             </summary>
         </member>
+        <member name="T:FaceONNX.FaceLivenessDetector">
+            <summary>
+            Defines face liveness detector using Deep Pixel-wise Binary Supervision (DeepPixBiS).
+            Model: OULU_Protocol_2_model_0_0.onnx
+            Reference: https://github.com/ffletcherr/face-recognition-liveness
+            </summary>
+        </member>
+        <member name="F:FaceONNX.FaceLivenessDetector._session">
+            <summary>
+            Inference session.
+            </summary>
+        </member>
+        <member name="M:FaceONNX.FaceLivenessDetector.#ctor">
+            <summary>
+            Initializes face liveness detector using embedded resources.
+            </summary>
+        </member>
+        <member name="M:FaceONNX.FaceLivenessDetector.#ctor(Microsoft.ML.OnnxRuntime.SessionOptions)">
+            <summary>
+            Initializes face liveness detector using embedded resources.
+            </summary>
+            <param name="options">Session options</param>
+        </member>
+        <member name="M:FaceONNX.FaceLivenessDetector.Forward(System.Drawing.Bitmap)">
+            <inheritdoc/>
+        </member>
+        <member name="M:FaceONNX.FaceLivenessDetector.Forward(System.Single[0:,0:][])">
+            <inheritdoc/>
+        </member>
+        <member name="M:FaceONNX.FaceLivenessDetector.Dispose">
+            <inheritdoc/>
+        </member>
+        <member name="M:FaceONNX.FaceLivenessDetector.Dispose(System.Boolean)">
+            <inheritdoc/>
+        </member>
+        <member name="M:FaceONNX.FaceLivenessDetector.Finalize">
+            <summary>
+            Destructor.
+            </summary>
+        </member>
         <member name="T:FaceONNX.FaceProcessingExtensions">
             <summary>
             Using for face processing.
@@ -343,6 +383,27 @@
             </summary>
             <param name="image">Image in BGR terms</param>
             <returns>FaceDetectionResult</returns>
+        </member>
+        <member name="T:FaceONNX.IFaceLivenessDetector">
+            <summary>
+            Defines face liveness detector interface.
+            </summary>
+        </member>
+        <member name="M:FaceONNX.IFaceLivenessDetector.Forward(System.Drawing.Bitmap)">
+            <summary>
+            Returns the liveness score for the given face image.
+            A higher score indicates a higher probability of being a live face.
+            </summary>
+            <param name="faceImage">Bitmap of the face</param>
+            <returns>Liveness score (float)</returns>
+        </member>
+        <member name="M:FaceONNX.IFaceLivenessDetector.Forward(System.Single[0:,0:][])">
+            <summary>
+            Returns the liveness score for the given face image.
+            A higher score indicates a higher probability of being a live face.
+            </summary>
+            <param name="faceImage">Face image in RGB terms (float[3][,])</param>
+            <returns>Liveness score (float)</returns>
         </member>
         <member name="T:FaceONNX.NonMaxSuppressionExensions">
             <summary>
@@ -581,6 +642,11 @@
             </summary>
         </member>
         <member name="P:FaceONNX.Properties.Resources.eye_blink_cnn">
+            <summary>
+              Looks up a localized resource of type System.Byte[].
+            </summary>
+        </member>
+        <member name="P:FaceONNX.Properties.Resources.liveness_oulu_protocol_2">
             <summary>
               Looks up a localized resource of type System.Byte[].
             </summary>

@@ -18,18 +18,24 @@ namespace FaceONNX.Backend.Services
         private readonly FaceDetector _faceDetector;
         private readonly FaceEmbedder _faceEmbedder;
         private readonly Face68LandmarksExtractor _faceLandmarksExtractor;
+        private readonly IFaceLivenessDetector _faceLivenessDetector; // Added
         private readonly ILogger<FaceProcessingService> _logger;
+        private const float DefaultLivenessThreshold = 0.5f; // Added - Threshold for liveness check
         private bool _disposed = false;
 
-        public FaceProcessingService(ConfigurationService config, ILogger<FaceProcessingService> logger)
+        public FaceProcessingService(ConfigurationService config,
+                                     ILogger<FaceProcessingService> logger,
+                                     IFaceLivenessDetector faceLivenessDetector) // Added detector injection
         {
             _logger = logger;
+            _faceLivenessDetector = faceLivenessDetector; // Added assignment
             try
             {
                 _logger.LogInformation("Loading FaceONNX models...");
                 _faceDetector = new FaceDetector(); // Load detection model
                 _faceEmbedder = new FaceEmbedder(); // Load embedding model
                 _faceLandmarksExtractor = new Face68LandmarksExtractor(); // Load landmark model
+                // Liveness detector is injected, assuming it's loaded via DI
                 _logger.LogInformation("FaceONNX models loaded successfully.");
             }
             catch (Exception ex)
@@ -46,7 +52,7 @@ namespace FaceONNX.Backend.Services
         /// <param name="image">The input image.</param>
         /// <param name="extractLandmarks">Whether to extract 68-point landmarks.</param>
         /// <returns>A list of results for each detected face.</returns>
-        public List<FaceProcessingResult> ProcessImage(Image<Rgb24> image, bool extractLandmarks = false)
+        public List<FaceProcessingResult> ProcessImage(Image<Rgb24> image, bool extractLandmarks = false, bool performLivenessCheck = true) // Added performLivenessCheck parameter
         {
             var results = new List<FaceProcessingResult>();
             var imageArray = Utils.ImageToMultiDimArray(image); // Use helper method
@@ -57,19 +63,17 @@ namespace FaceONNX.Backend.Services
 
             foreach (var detectedFace in detectedFaces)
             {
-                var result = new FaceProcessingResult { DetectionBox = detectedFace.Box }; // Store detection box
+                var result = new FaceProcessingResult { DetectionBox = detectedFace.Box };
 
                 if (!detectedFace.Box.IsEmpty)
                 {
                     try
                     {
-                        // 2. Extract Landmarks (always needed for alignment before embedding)
+                        // 2. Extract Landmarks (always needed for alignment)
                         var landmarks = _faceLandmarksExtractor.Forward(imageArray, detectedFace.Box);
                         var angle = landmarks.RotationAngle; // Get rotation angle for alignment
 
                         // Store 5-point landmarks if available (often part of detection)
-                        // Assuming FaceDetector provides basic landmarks, adjust if needed
-                        // 5pt landmarks are already relative to the original image, no offset needed.
                         result.Landmarks5pt = ConvertToFloatArray(detectedFace.Points.All, 0, 0); // Pass 0 for offsets
 
                         if (extractLandmarks)
@@ -79,14 +83,36 @@ namespace FaceONNX.Backend.Services
                         }
 
                         // 3. Align Face
-                        // Use FaceProcessingExtensions.Align (ensure FaceONNX.Addons is referenced)
-                        // Note: Alignment might modify the image data used for embedding.
-                        // Consider if the original or aligned image should be used for landmarks.
-                        // Using aligned image for embedding is standard practice.
                         var alignedFace = FaceProcessingExtensions.Align(imageArray, detectedFace.Box, angle);
 
-                        // 4. Extract Embedding from Aligned Face
-                        result.Embedding = _faceEmbedder.Forward(alignedFace);
+                        // 4. Perform Liveness Check (Optional, on Aligned Face)
+                        if (performLivenessCheck)
+                        {
+                            result.LivenessScore = _faceLivenessDetector.Forward(alignedFace); // Check on aligned face
+                            result.IsLive = result.LivenessScore >= DefaultLivenessThreshold;
+                            _logger.LogInformation($"Face at {detectedFace.Box}: Liveness Score = {result.LivenessScore}, IsLive = {result.IsLive}");
+                        }
+                        else
+                        {
+                            result.LivenessScore = -1f; // Default score if check is skipped
+                            result.IsLive = true; // Assume live if check is skipped
+                            _logger.LogInformation($"Face at {detectedFace.Box}: Liveness check skipped.");
+                        }
+
+
+                        // 5. Extract Embedding from Aligned Face (only if live or check skipped)
+                        if (result.IsLive)
+                        {
+                            result.Embedding = _faceEmbedder.Forward(alignedFace);
+                        }
+                        else
+                        {
+                            _logger.LogWarning($"Face at {detectedFace.Box} failed liveness check (Score: {result.LivenessScore}). Skipping embedding.");
+                            // Ensure embedding is null if not live
+                            result.Embedding = null;
+                            // Keep landmarks even if not live? Yes, they were extracted before the check.
+                            // If landmarks were requested, Landmarks68pt should already be populated.
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -98,7 +124,7 @@ namespace FaceONNX.Backend.Services
                 }
                 else
                 {
-                     _logger.LogWarning("Detected face with empty bounding box. Skipping processing for this face.");
+                    _logger.LogWarning("Detected face with empty bounding box. Skipping processing for this face.");
                 }
 
                 results.Add(result);
@@ -132,6 +158,7 @@ namespace FaceONNX.Backend.Services
                     _faceDetector?.Dispose();
                     _faceEmbedder?.Dispose();
                     _faceLandmarksExtractor?.Dispose();
+                    _faceLivenessDetector?.Dispose(); // Added
                     _logger.LogInformation("FaceProcessingService disposed.");
                 }
                 // Dispose unmanaged resources if any
@@ -153,7 +180,9 @@ namespace FaceONNX.Backend.Services
     {
         public System.Drawing.Rectangle DetectionBox { get; set; }
         public float[]? Embedding { get; set; }
-        public float[][]? Landmarks5pt { get; set; } // Basic landmarks from detector (if available)
-        public float[][]? Landmarks68pt { get; set; } // Detailed landmarks (if requested)
+        public float[][]? Landmarks5pt { get; set; } // Basic landmarks from detector
+        public float[][]? Landmarks68pt { get; set; } // Detailed landmarks (if requested and live)
+        public float LivenessScore { get; set; } // Added
+        public bool IsLive { get; set; } // Added
     }
 }

@@ -4,3 +4,4 @@
 gallery_images/
 backend/embeddings.json
 *.pyc
+.DS_Store

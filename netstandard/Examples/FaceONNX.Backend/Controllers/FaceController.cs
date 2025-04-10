@@ -184,17 +184,19 @@ namespace FaceONNX.Backend.Controllers
         [ProducesResponseType(typeof(RecognitionResponse), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public async Task<IActionResult> RecognizeFace([FromForm] IFormFile file, [FromQuery] bool extractLandmarks = false)
+        public async Task<IActionResult> RecognizeFace([FromForm] IFormFile file,
+                                                     [FromQuery] bool extractLandmarks = false,
+                                                     [FromQuery] bool checkLiveness = true) // Added checkLiveness parameter
         {
             extractLandmarks = true;
-             if (file == null || file.Length == 0)
+            if (file == null || file.Length == 0)
             {
                 return BadRequest(new { message = "Image file is required." });
             }
 
             if (!_registeredEmbeddings.Any())
             {
-                 return BadRequest(new { message = "No faces registered yet. Cannot perform recognition." });
+                return BadRequest(new { message = "No faces registered yet. Cannot perform recognition." });
             }
 
             try
@@ -213,19 +215,21 @@ namespace FaceONNX.Backend.Controllers
                 }
 
                 // Process query image
-                var queryResults = _faceProcessingService.ProcessImage(image, extractLandmarks);
+                var queryResults = _faceProcessingService.ProcessImage(image, extractLandmarks, checkLiveness); // Pass checkLiveness
                 if (!queryResults.Any(r => r.Embedding != null)) // Check if any face yielded an embedding
                 {
                     _logger.LogWarning("No faces with valid embeddings detected in the query image.");
-                     // Return unknown but potentially with landmarks if requested and detected
-                     var firstResult = queryResults.FirstOrDefault();
-                     return Ok(new RecognitionResponse
-                     {
-                         Label = "unknown",
-                         Similarity = -1f,
-                         QueryLandmarks5pt = firstResult?.Landmarks5pt, // Return landmarks if available
-                         QueryLandmarks68pt = extractLandmarks ? firstResult?.Landmarks68pt : null
-                     });
+                    // Return unknown but potentially with landmarks if requested and detected
+                    var firstResult = queryResults.FirstOrDefault();
+                    return Ok(new RecognitionResponse
+                    {
+                        Label = "unknown",
+                        Similarity = -1f,
+                        QueryLandmarks5pt = firstResult?.Landmarks5pt,
+                        QueryLandmarks68pt = extractLandmarks ? firstResult?.Landmarks68pt : null,
+                        LivenessScore = firstResult?.LivenessScore ?? -1f, // Add liveness info even if no embedding
+                        IsLive = firstResult?.IsLive ?? false
+                    });
                 }
 
                 // --- Find Best Match ---
@@ -236,7 +240,8 @@ namespace FaceONNX.Backend.Controllers
 
                 foreach (var queryFace in queryResults)
                 {
-                    if (queryFace.Embedding == null) continue; // Skip faces without embeddings
+                    // Skip faces without embeddings OR faces that failed the liveness check
+                    if (queryFace.Embedding == null || !queryFace.IsLive) continue;
 
                     string currentFaceBestLabel = "unknown";
                     float currentFaceHighestSimilarity = -1.0f;
@@ -290,8 +295,10 @@ namespace FaceONNX.Backend.Controllers
                     QueryEmbedding = bestQueryFaceResult?.Embedding, // Embedding of the best matching query face
                     MatchedEmbedding = overallBestMatchingEntry?.Embedding,
                     MatchedImageFilename = overallBestMatchingEntry?.ImageFilename,
-                    QueryLandmarks5pt = bestQueryFaceResult?.Landmarks5pt, // Landmarks from the best matching query face
-                    QueryLandmarks68pt = extractLandmarks ? bestQueryFaceResult?.Landmarks68pt : null
+                    QueryLandmarks5pt = bestQueryFaceResult?.Landmarks5pt,
+                    QueryLandmarks68pt = extractLandmarks ? bestQueryFaceResult?.Landmarks68pt : null,
+                    LivenessScore = bestQueryFaceResult?.LivenessScore ?? -1f, // Liveness info from the best matching query face
+                    IsLive = bestQueryFaceResult?.IsLive ?? false
                 };
 
                 return Ok(response);
@@ -346,9 +353,9 @@ namespace FaceONNX.Backend.Controllers
 
             try
             {
-                 bool saveNeeded = false; // Flag to indicate if save is required
-                 lock (_loadLock) // Lock for modification
-                 {
+                bool saveNeeded = false; // Flag to indicate if save is required
+                lock (_loadLock) // Lock for modification
+                {
                     if (!_registeredEmbeddings.TryGetValue(label, out var entriesList))
                     {
                         return NotFound(new { message = $"Label '{label}' not found." });
@@ -373,22 +380,22 @@ namespace FaceONNX.Backend.Controllers
                         _logger.LogInformation($"Removed empty label '{label}' from memory.");
                     }
                     saveNeeded = true; // Mark that save is needed after lock release
-                 } // End lock
+                } // End lock
 
-                 // Save changes asynchronously (outside the lock)
-                 if (saveNeeded)
-                 {
-                     try
-                     {
-                         await _persistenceService.SaveEmbeddingsAsync(_registeredEmbeddings);
-                         _logger.LogInformation("Successfully saved updated embeddings after deletion.");
-                     }
-                     catch (Exception saveEx)
-                     {
-                         _logger.LogError(saveEx, "Error saving embeddings after deletion.");
-                         // Decide if this should cause the request to fail
-                     }
-                 }
+                // Save changes asynchronously (outside the lock)
+                if (saveNeeded)
+                {
+                    try
+                    {
+                        await _persistenceService.SaveEmbeddingsAsync(_registeredEmbeddings);
+                        _logger.LogInformation("Successfully saved updated embeddings after deletion.");
+                    }
+                    catch (Exception saveEx)
+                    {
+                        _logger.LogError(saveEx, "Error saving embeddings after deletion.");
+                        // Decide if this should cause the request to fail
+                    }
+                }
 
 
                 // Delete the image file (outside the lock)
@@ -401,9 +408,9 @@ namespace FaceONNX.Backend.Controllers
             }
             catch (Exception ex)
             {
-                 _logger.LogError(ex, $"Error deleting entry: label='{label}', filename='{filename}'.");
-                 // Consider reloading embeddings from file if save failed to ensure consistency?
-                 return StatusCode(StatusCodes.Status500InternalServerError, new { message = $"An internal error occurred during deletion: {ex.Message}" });
+                _logger.LogError(ex, $"Error deleting entry: label='{label}', filename='{filename}'.");
+                // Consider reloading embeddings from file if save failed to ensure consistency?
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = $"An internal error occurred during deletion: {ex.Message}" });
             }
         }
 

@@ -29,5 +29,11 @@ namespace FaceONNX.Backend.Models
 
         [JsonPropertyName("query_landmarks_68pt")]
         public float[][]? QueryLandmarks68pt { get; set; }
+
+        [JsonPropertyName("liveness_score")]
+        public float LivenessScore { get; set; } // Added
+
+        [JsonPropertyName("is_live")]
+        public bool IsLive { get; set; } // Added
     }
 }

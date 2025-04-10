@@ -1,3 +1,4 @@
+using FaceONNX; // Add FaceONNX namespace for detectors/embedders
 using FaceONNX.Backend.Services;
 using Microsoft.Extensions.FileProviders; // For static files
 using System.IO; // For Path
@@ -34,6 +35,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddSingleton<ConfigurationService>();
 builder.Services.AddSingleton<PersistenceService>();
 builder.Services.AddSingleton<FaceProcessingService>(); // Loads models, keep as singleton
+builder.Services.AddSingleton<IFaceLivenessDetector, FaceLivenessDetector>(); // Add Liveness Detector
 
 // 3. Add Controllers service
 builder.Services.AddControllers()
