@@ -95,7 +95,9 @@ app.UseStaticFiles(new StaticFileOptions
 });
 
 // app.UseAuthorization();
-
+ 
+app.UseRouting(); // Explicitly add routing middleware before mapping endpoints
+ 
 app.MapControllers(); // Maps attribute-routed controllers (like FaceController)
 
 // --- Fallback for SPA routing ---
