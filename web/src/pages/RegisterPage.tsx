@@ -299,7 +299,7 @@ const RegisterPage: React.FC = () => {
                  {isDragActive ? (
                    <p className={`text-sm ${imageSrc ? 'text-white' : 'text-primary'}`}>Drop the image here ...</p>
                  ) : (
-                   <p className={`text-sm ${imageSrc ? 'text-white' : 'text-muted-foreground'}`}>Drag 'n' drop or click to select</p>
+                   <p className={`text-sm ${imageSrc ? 'text-white' : 'text-muted-foreground'}`}>Drag 'n' drop, click to select, or Ctrl+V to paste</p>
                  )}
                </div>
              </div>

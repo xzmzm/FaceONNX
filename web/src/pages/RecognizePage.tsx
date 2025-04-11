@@ -506,7 +506,7 @@ interface DetailedMediaDeviceInfo {
                    <> {/* Re-added fragment */}
                      {/* Removed Paste Button, adjusted text */}
                      <p className={`text-sm ${imageSrc ? 'text-white' : 'text-muted-foreground'}`}>
-                       Drag 'n' drop or click to select
+                       Drag 'n' drop, click to select, or Ctrl+V to paste
                      </p>
                    </>
                  )}

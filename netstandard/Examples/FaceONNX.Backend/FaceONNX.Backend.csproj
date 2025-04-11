@@ -9,6 +9,8 @@
     <SelfContained>true</SelfContained> <!-- Include the runtime -->
     <InvariantGlobalization>true</InvariantGlobalization> <!-- Optional: Reduce size -->
     <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
+    <!-- Suppress warnings related to MVC and Native AOT incompatibility -->
+    <NoWarn>$(NoWarn);IL2026;IL2104;IL3053;IL3000</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

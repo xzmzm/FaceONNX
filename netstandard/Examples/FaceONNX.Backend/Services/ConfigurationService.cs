@@ -10,7 +10,7 @@ namespace FaceONNX.Backend.Services
     {
         // --- Paths ---
         // Base directory of the current assembly (FaceONNX.Backend)
-        private static readonly string _baseDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? Directory.GetCurrentDirectory();
+        private static readonly string _baseDirectory = AppContext.BaseDirectory ?? Directory.GetCurrentDirectory();
 
         // Gallery directory relative to the backend project's output directory
         public string WebAppDirectory { get; } = Path.Combine(_baseDirectory, "webapp");

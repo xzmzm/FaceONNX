@@ -15,17 +15,13 @@ namespace FaceONNX.Backend.Services
     public class PersistenceService
     {
         private readonly string _filePath;
-        private readonly JsonSerializerOptions _jsonOptions;
+        // Removed _jsonOptions, options are now in PersistenceJsonContext
         private static readonly SemaphoreSlim _fileLock = new SemaphoreSlim(1, 1); // Semaphore for file access
 
         public PersistenceService(ConfigurationService config)
         {
             _filePath = config.EmbeddingsFilePath;
-            _jsonOptions = new JsonSerializerOptions
-            {
-                WriteIndented = true, // For readability
-                PropertyNameCaseInsensitive = true // For flexibility if needed
-            };
+            // _jsonOptions initialization removed
 
             // Ensure the directory exists on initialization
             config.EnsureGalleryDirectoryExists();
@@ -53,7 +49,8 @@ namespace FaceONNX.Backend.Services
 
                 try
                 {
-                    var data = JsonSerializer.Deserialize<Dictionary<string, List<GalleryEntry>>>(json, _jsonOptions);
+                    // Use source generator context for deserialization
+                    var data = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.DictionaryStringListGalleryEntry);
                     return data ?? new Dictionary<string, List<GalleryEntry>>();
                 }
                 catch (JsonException ex)
@@ -79,7 +76,8 @@ namespace FaceONNX.Backend.Services
             await _fileLock.WaitAsync(); // Acquire lock
             try
             {
-                var json = JsonSerializer.Serialize(embeddings, _jsonOptions);
+                // Use source generator context for serialization
+                var json = JsonSerializer.Serialize(embeddings, PersistenceJsonContext.Default.DictionaryStringListGalleryEntry);
                 await File.WriteAllTextAsync(_filePath, json);
             }
             finally
