@@ -102,17 +102,6 @@ namespace FaceONNX.Backend.Services
 
                         // 5. Extract Embedding from Aligned Face (only if live or check skipped)
                         result.Embedding = _faceEmbedder.Forward(alignedFace);
-                        if (result.IsLive)
-                        {
-                        }
-                        else
-                        {
-                            _logger.LogWarning($"Face at {detectedFace.Box} failed liveness check (Score: {result.LivenessScore}). Skipping embedding.");
-                            // Ensure embedding is null if not live
-                            result.Embedding = null;
-                            // Keep landmarks even if not live? Yes, they were extracted before the check.
-                            // If landmarks were requested, Landmarks68pt should already be populated.
-                        }
                     }
                     catch (Exception ex)
                     {

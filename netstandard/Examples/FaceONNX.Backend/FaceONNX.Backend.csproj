@@ -4,7 +4,11 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RuntimeIdentifiers>win-x64;win-x86;win-arm64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+	<TargetFramework>net9.0</TargetFramework>
+    <PublishAot>true</PublishAot> <!-- Enable NativeAOT -->
+    <SelfContained>true</SelfContained> <!-- Include the runtime -->
+    <InvariantGlobalization>true</InvariantGlobalization> <!-- Optional: Reduce size -->
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <ItemGroup>

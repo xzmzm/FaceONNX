@@ -241,7 +241,7 @@ namespace FaceONNX.Backend.Controllers
                 foreach (var queryFace in queryResults)
                 {
                     // Skip faces without embeddings OR faces that failed the liveness check
-                    if (queryFace.Embedding == null || !queryFace.IsLive) continue;
+                    if (queryFace.Embedding == null) continue;
 
                     string currentFaceBestLabel = "unknown";
                     float currentFaceHighestSimilarity = -1.0f;
