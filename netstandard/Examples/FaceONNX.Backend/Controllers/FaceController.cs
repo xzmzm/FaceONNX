@@ -361,7 +361,8 @@ namespace FaceONNX.Backend.Controllers
                         return NotFound(new { message = $"Label '{label}' not found." });
                     }
 
-                    int entryIndex = entriesList.FindIndex(e => e.ImageFilename.Equals(filename, StringComparison.OrdinalIgnoreCase));
+                    // Fix for the line causing CS0266, CS1662, and CS8619 errors
+                    int entryIndex = entriesList.FindIndex(e => e.ImageFilename != null && e.ImageFilename.Equals(filename, StringComparison.OrdinalIgnoreCase));
 
                     if (entryIndex == -1)
                     {

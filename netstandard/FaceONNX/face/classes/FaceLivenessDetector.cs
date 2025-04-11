@@ -74,11 +74,11 @@ namespace FaceONNX
 
             // Resize
             var resized = new float[3][,];
-            for (int i = 0; i < 3; i++)
-            {
-                // Using Bilinear interpolation similar to torchvision's default resize
-                resized[i] = faceImage[i].Resize(_inputSize.Height, _inputSize.Width, InterpolationMode.Bilinear);
-            }
+            // Using Bilinear interpolation similar to torchvision's default resize
+            // BGR to RGB
+            resized[0] = faceImage[2].Resize(_inputSize.Height, _inputSize.Width, InterpolationMode.Bilinear);
+            resized[1] = faceImage[1].Resize(_inputSize.Height, _inputSize.Width, InterpolationMode.Bilinear);
+            resized[2] = faceImage[0].Resize(_inputSize.Height, _inputSize.Width, InterpolationMode.Bilinear);
 
             // Normalize and prepare tensor
             var inputData = new float[1 * 3 * _inputSize.Height * _inputSize.Width];
@@ -90,7 +90,7 @@ namespace FaceONNX
                     {
                         int index = c * _inputSize.Height * _inputSize.Width + h * _inputSize.Width + w;
                         // Normalize: (pixel - mean) / std
-                        inputData[index] = (resized[c][h, w] / 255f - _mean[c]) / _std[c];
+                        inputData[index] = (resized[c][h, w] - _mean[c]) / _std[c];
                     }
                 }
             }

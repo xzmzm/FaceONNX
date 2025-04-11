@@ -101,9 +101,9 @@ namespace FaceONNX.Backend.Services
 
 
                         // 5. Extract Embedding from Aligned Face (only if live or check skipped)
+                        result.Embedding = _faceEmbedder.Forward(alignedFace);
                         if (result.IsLive)
                         {
-                            result.Embedding = _faceEmbedder.Forward(alignedFace);
                         }
                         else
                         {

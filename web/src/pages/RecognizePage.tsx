@@ -16,6 +16,8 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 interface RecognitionResult {
   label: string;
   similarity: number;
+  liveness_score: number; // Corrected: Always present from C# backend
+  is_live: boolean;       // Added: Also returned from C# backend
   query_embedding: number[] | null;
   matched_embedding: number[] | null;
   matched_image_filename: string | null;
@@ -51,7 +53,8 @@ const RecognizePage: React.FC = () => {
   const [imageSrc, setImageSrc] = useState<string | null>(null); // For uploaded image preview or webcam snapshot (base64)
   const [activeTab, setActiveTab] = useState('webcam'); // Default to webcam tab
   const webcamRef = useRef<Webcam>(null);
-  const [isManualRecognizing, setIsManualRecognizing] = useState(false); // Renamed for clarity
+  const [isManualRecognizing, setIsManualRecognizing] = useState(false); // For upload tab button
+  const [isWebcamRecognizing, setIsWebcamRecognizing] = useState(false); // For webcam tab button
   const [recognitionResult, setRecognitionResult] = useState<RecognitionResult | null>(null);
   // const [devices, setDevices] = useState<MediaDeviceInfo[]>([]); // Replaced by detailedDevices
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
@@ -357,19 +360,30 @@ interface DetailedMediaDeviceInfo {
   };
   // --- End Paste Handling ---
 
-  const handleWebcamCapture = useCallback(() => {
-    setRecognitionResult(null); // Clear result on new capture
-    setIsAutoRecognizing(false); // Stop auto if user takes manual snapshot
+  // Modified: Now takes snapshot and immediately recognizes
+  const handleWebcamCaptureAndRecognize = useCallback(() => {
+    if (isAutoRecognizing || recognitionInProgressRef.current || isWebcamRecognizing) return; // Prevent multiple clicks
+
+    setIsWebcamRecognizing(true);
+    setRecognitionResult(null); // Clear previous result
+    setIsAutoRecognizing(false); // Ensure auto mode is off
+
     if (webcamRef.current) {
       const image = webcamRef.current.getScreenshot();
       if (image) {
-        setImageSrc(image);
-        toast.success('Snapshot captured!');
+        // Don't set imageSrc here, handleRecognize will do it upon completion
+        // toast.success('Snapshot captured!'); // Remove this toast
+        handleRecognize(image).finally(() => {
+          setIsWebcamRecognizing(false); // Reset loading state regardless of success/failure
+        });
       } else {
         toast.error('Could not capture snapshot.');
+        setIsWebcamRecognizing(false); // Reset loading state on capture failure
       }
+    } else {
+        setIsWebcamRecognizing(false); // Reset if webcamRef is somehow null
     }
-  }, [webcamRef]);
+  }, [webcamRef, isAutoRecognizing, isWebcamRecognizing, handleRecognize]); // Added dependencies
 
   // --- Calculate Label Position ---
   // --- Calculate Label Position --- (Refined for object-contain)
@@ -502,10 +516,14 @@ interface DetailedMediaDeviceInfo {
                {/* Apply dynamic style to label overlay */}
                {imageSrc && recognitionResult && recognitionResult.label !== 'unknown' && (
                  <div
-                    className="z-30 bg-black/60 text-white text-xs font-semibold px-1.5 py-0.5 rounded whitespace-nowrap"
+                    className="z-30 bg-black/60 text-white text-xs font-semibold px-1.5 py-0.5 rounded whitespace-nowrap flex items-center space-x-1" // Added flex for spacing
                     style={labelPositionStyle} // Apply calculated style
                  >
-                   {recognitionResult.label} ({ (recognitionResult.similarity * 100).toFixed(1) }%)
+                   <span>{recognitionResult.label} ({ (recognitionResult.similarity * 100).toFixed(1) }%)</span>
+                   {/* Added Real/Fake Badge */}
+                   <span className={`px-1 py-0.5 rounded text-xs font-medium ${recognitionResult.is_live ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'}`}>
+                     {recognitionResult.is_live ? 'Real' : 'Fake'}
+                   </span>
                  </div>
                )}
 
@@ -610,10 +628,14 @@ interface DetailedMediaDeviceInfo {
                    {/* Recognition Label Overlay (Webcam Snapshot) */}
                    {imageSrc && recognitionResult && recognitionResult.label !== 'unknown' && (
                      <div
-                        className="z-30 bg-black/60 text-white text-xs font-semibold px-1.5 py-0.5 rounded whitespace-nowrap"
+                        className="z-30 bg-black/60 text-white text-xs font-semibold px-1.5 py-0.5 rounded whitespace-nowrap flex items-center space-x-1" // Added flex for spacing
                         style={labelPositionStyle} // Apply calculated style
                      >
-                       {recognitionResult.label} ({ (recognitionResult.similarity * 100).toFixed(1) }%)
+                       <span>{recognitionResult.label} ({ (recognitionResult.similarity * 100).toFixed(1) }%)</span>
+                       {/* Added Real/Fake Badge */}
+                       <span className={`px-1 py-0.5 rounded text-xs font-medium ${recognitionResult.is_live ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'}`}>
+                         {recognitionResult.is_live ? 'Real' : 'Fake'}
+                       </span>
                      </div>
                    )}
                    {/* Landmark Overlay - Always shown if landmarks available */}
@@ -676,10 +698,16 @@ interface DetailedMediaDeviceInfo {
                 </div>
              )}
             <div className="flex space-x-2"> {/* Container for buttons */}
-               <Button onClick={handleWebcamCapture} disabled={isAutoRecognizing || recognitionInProgressRef.current}>Take Snapshot</Button>
+               {/* Modified Button: Renamed and calls new handler */}
+               <Button
+                 onClick={handleWebcamCaptureAndRecognize}
+                 disabled={isAutoRecognizing || recognitionInProgressRef.current || isWebcamRecognizing}
+               >
+                 {isWebcamRecognizing ? 'Recognizing...' : 'Recognize'}
+               </Button>
                <Button
                   onClick={() => setIsAutoRecognizing(!isAutoRecognizing)}
-                  disabled={recognitionInProgressRef.current}
+                  disabled={recognitionInProgressRef.current || isWebcamRecognizing} // Also disable if webcam recognizing
                   variant={isAutoRecognizing ? "destructive" : "default"} // Style change when active
                 >
                   {isAutoRecognizing ? 'Stop Auto Recognize' : 'Start Auto Recognize'}
@@ -718,6 +746,14 @@ interface DetailedMediaDeviceInfo {
             <CardContent className="space-y-4">
               <p>Label: <span className="font-semibold">{recognitionResult.label}</span></p>
               <p>Similarity: <span className="font-semibold">{(recognitionResult.similarity * 100).toFixed(2)}%</span></p>
+              {/* Display Liveness Score and Status */}
+              {/* Liveness score is always present, display it. Add Is Live status. */}
+              <p>
+                Liveness Score: <span className="font-semibold">{(recognitionResult.liveness_score * 100).toFixed(1)}%</span>
+                <span className={`ml-2 px-1.5 py-0.5 rounded text-xs font-medium ${recognitionResult.is_live ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'}`}>
+                  {recognitionResult.is_live ? 'Real' : 'Fake'}
+                </span>
+              </p>
 
               {/* Display matched image and comparison chart if match found */}
               {recognitionResult.label !== 'unknown' && recognitionResult.matched_image_filename && recognitionResult.matched_embedding && recognitionResult.query_embedding && (
